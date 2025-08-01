@@ -1,0 +1,164 @@
+name: Build Flutter Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: 'Flutter repo'
+        default: 'littleGnAl/flutter'
+        required: true
+        type: string
+      flutter_ref:
+        description: 'branch / tag / commit'
+        default: 'master'
+        required: true
+        type: string
+      upload_release:
+        description: 'Publish to GitHub Release'
+        default: false
+        type: boolean
+
+jobs:
+  build-arm64:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARM64: out/android_release_arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build arm64 release
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm64 \
+          --runtime-mode=release \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_ARM64} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:embedding_jars \
+          flutter/shell/platform/android:abi_jars
+
+    - name: Upload arm64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-arm64-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARM64 }}/zip_archives/**
+        retention-days: 90
+
+  build-armv7a:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARMV7: out/android_release
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build armv7a release
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm \
+          --runtime-mode=release \
+          --no-lto --prebuilt-dart-sdk
+        ninja -C ${OUT_ARMV7} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:abi_jars
+
+    - name: Upload armv7a artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-armv7a-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARMV7 }}/zip_archives/**
+        retention-days: 90
+
+  package-and-release:
+    runs-on: macos-15
+    needs: [build-arm64, build-armv7a]
+    if: always() && (needs.build-arm64.result == 'success' || needs.build-armv7a.result == 'success')
+    timeout-minutes: 30
+    
+    permissions:
+      contents: write
+      
+    env:
+      SYMBOL_DIR: ${{ github.workspace }}/symbols
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download arm64 artifacts
+      if: needs.build-arm64.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-arm64-artifacts
+        path: arm64-artifacts/
+
+    - name: Download armv7a artifacts
+      if: needs.build-armv7a.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-armv7a-artifacts
+        path: armv7a-artifacts/
+
+    - name: Package artifacts
+      run: |
+        BRANCH=$(echo '${{ github.event.inputs.flutter_ref }}' | sed 's#/#-#g')
+        TS=$(date -u "+%Y%m%d%H%M")
+        COMMIT=$(git ls-remote https://github.com/${{ github.event.inputs.flutter_repo }} refs/heads/${{ github.event.inputs.flutter_ref }} | cut -c1-7 || echo "unknown")
+        ZIP_NAME="${BRANCH}-${TS}-${COMMIT}.zip"
+        
+        mkdir -p artifacts
+        if [ -d "arm64-artifacts" ]; then
+          cp -r arm64-artifacts artifacts/arm64
+        fi
+        if [ -d "armv7a-artifacts" ]; then
+          cp -r armv7a-artifacts artifacts/armv7a
+        fi
+        
+        cd artifacts
+        zip -r "../$ZIP_NAME" .
+        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ZIP_NAME }}
+        path: ${{ env.ZIP_NAME }}
+        compression-level: 0
+
+    - name: Create Release
+      if: ${{ inputs.upload_release }}
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ env.ZIP_NAME }}
+        release_name: Flutter Artifacts Android ${{ env.ZIP_NAME }}
+
+    - name: Upload asset
+      if: ${{ inputs.upload_release }}
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ${{ env.ZIP_NAME }}
+        asset_name: ${{ env.ZIP_NAME }}
+        asset_content_type: application/zip

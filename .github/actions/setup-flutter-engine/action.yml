@@ -1,0 +1,31 @@
+name: 'Setup Flutter Engine'
+description: 'Clone Flutter repo, install Depot Tools, and run gclient sync'
+inputs:
+  flutter_repo:
+    description: 'Flutter repository to clone'
+    required: true
+    default: 'flutter/flutter'
+  flutter_ref:
+    description: 'Branch, tag, or commit to checkout'
+    required: true
+    default: 'master'
+runs:
+  using: 'composite'
+  steps:
+    - name: Clone flutter repo
+      shell: bash
+      run: |
+        git clone https://github.com/${{ inputs.flutter_repo }} flutter
+        cd flutter
+        git fetch --depth 1 origin ${{ inputs.flutter_ref }}
+        git checkout FETCH_HEAD
+
+    - name: Install Depot Tools
+      uses: newkdev/setup-depot-tools@v1.0.1
+
+    - name: gclient sync
+      shell: bash
+      run: |
+        cd flutter
+        cp -RP ./engine/scripts/standard.gclient ./.gclient
+        gclient sync -j8 --no-history
