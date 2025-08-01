@@ -1,0 +1,379 @@
+name: Build Flutter Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: 'Flutter repo'
+        default: 'littleGnAl/flutter'
+        required: true
+        type: string
+      flutter_ref:
+        description: 'branch / tag / commit'
+        default: 'master'
+        required: true
+        type: string
+      upload_release:
+        description: 'Publish to GitHub Release'
+        default: false
+        type: boolean
+
+jobs:
+  build-arm64-release:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARM64: out/android_release_arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build arm64 release
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm64 \
+          --runtime-mode=release \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_ARM64} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:embedding_jars \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_release_arm64/arm64_v8a_release.maven-metadata.xml \
+          ./out/android_release_arm64/zip_archives/download.flutter.io/io/flutter/arm64_v8a_release/maven-metadata.xml
+        cp -r ./out/android_release_arm64/flutter_embedding_release.maven-metadata.xml \
+          ./out/android_release_arm64/zip_archives/download.flutter.io/io/flutter/flutter_embedding_release/maven-metadata.xml
+      
+
+    - name: Upload arm64 release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-arm64-release-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARM64 }}/zip_archives/**
+        retention-days: 90
+
+  build-arm64-profile:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARM64: out/android_profile_arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build arm64 profile
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm64 \
+          --runtime-mode=profile \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_ARM64} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:embedding_jars \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_profile_arm64/arm64_v8a_profile.maven-metadata.xml \
+          ./out/android_profile_arm64/zip_archives/download.flutter.io/io/flutter/arm64_v8a_profile/maven-metadata.xml
+        cp -r ./out/android_profile_arm64/flutter_embedding_profile.maven-metadata.xml \
+          ./out/android_profile_arm64/zip_archives/download.flutter.io/io/flutter/flutter_embedding_profile/maven-metadata.xml
+      
+    - name: Upload arm64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-arm64-profile-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARM64 }}/zip_archives/**
+        retention-days: 90
+
+  build-arm64-debug:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARM64: out/android_debug_arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build arm64 debug
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm64 \
+          --runtime-mode=debug \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_ARM64} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:embedding_jars \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_debug_arm64/arm64_v8a_debug.maven-metadata.xml \
+          ./out/android_debug_arm64/zip_archives/download.flutter.io/io/flutter/arm64_v8a_debug/maven-metadata.xml
+        cp -r ./out/android_debug_arm64/flutter_embedding_debug.maven-metadata.xml \
+          ./out/android_debug_arm64/zip_archives/download.flutter.io/io/flutter/flutter_embedding_debug/maven-metadata.xml
+      
+    - name: Upload arm64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-arm64-debug-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARM64 }}/zip_archives/**
+        retention-days: 90
+
+  build-armv7a-release:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARMV7: out/android_release
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build armv7a release
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm \
+          --runtime-mode=release \
+          --no-lto --prebuilt-dart-sdk
+        ninja -C ${OUT_ARMV7} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_release/armeabi_v7a_release.maven-metadata.xml \
+          ./out/android_release/zip_archives/download.flutter.io/io/flutter/armeabi_v7a_release/maven-metadata.xml
+
+    - name: Upload armv7a release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-armv7a-release-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARMV7 }}/zip_archives/**
+        retention-days: 90
+
+  build-armv7a-profile:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARMV7: out/android_profile
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build armv7a profile
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm \
+          --runtime-mode=profile \
+          --no-lto --prebuilt-dart-sdk
+        ninja -C ${OUT_ARMV7} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_profile/armeabi_v7a_profile.maven-metadata.xml \
+          ./out/android_profile/zip_archives/download.flutter.io/io/flutter/armeabi_v7a_profile/maven-metadata.xml
+
+    - name: Upload armv7a profile artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-armv7a-profile-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARMV7 }}/zip_archives/**
+        retention-days: 90
+
+  build-armv7a-debug:
+    runs-on: macos-15 
+    timeout-minutes: 120
+
+    env:
+      OUT_ARMV7: out/android_debug
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build armv7a debug
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --android --android-cpu=arm \
+          --runtime-mode=debug \
+          --no-lto --prebuilt-dart-sdk
+        ninja -C ${OUT_ARMV7} default \
+          clang_arm64/gen_snapshot \
+          flutter/shell/platform/android:abi_jars
+
+        cp -r ./out/android_debug/armeabi_v7a_debug.maven-metadata.xml \
+          ./out/android_debug/zip_archives/download.flutter.io/io/flutter/armeabi_v7a_debug/maven-metadata.xml
+
+    - name: Upload armv7a debug artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-armv7a-debug-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_ARMV7 }}/zip_archives/**
+        retention-days: 90
+
+  package-and-release:
+    runs-on: macos-15
+    needs: [
+      build-arm64-release, 
+      build-arm64-profile, 
+      build-arm64-debug, 
+      build-armv7a-release, 
+      build-armv7a-profile, 
+      build-armv7a-debug
+    ]
+    if: always() && (
+      needs.build-arm64-release.result == 'success' || 
+      needs.build-arm64-profile.result == 'success' || 
+      needs.build-arm64-debug.result == 'success' || 
+      needs.build-armv7a-release.result == 'success' || 
+      needs.build-armv7a-profile.result == 'success' || 
+      needs.build-armv7a-debug.result == 'success')
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # ARM64 artifacts
+    - name: Download arm64 release artifacts
+      if: needs.build-arm64-release.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-arm64-release-artifacts
+        path: arm64-release-artifacts/
+
+    - name: Download arm64 profile artifacts
+      if: needs.build-arm64-profile.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-arm64-profile-artifacts
+        path: arm64-profile-artifacts/
+
+    - name: Download arm64 debug artifacts
+      if: needs.build-arm64-debug.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-arm64-debug-artifacts
+        path: arm64-debug-artifacts/
+
+    # ARMv7a artifacts
+    - name: Download armv7a release artifacts
+      if: needs.build-armv7a-release.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-armv7a-release-artifacts
+        path: armv7a-release-artifacts/
+
+    - name: Download armv7a profile artifacts
+      if: needs.build-armv7a-profile.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-armv7a-profile-artifacts
+        path: armv7a-profile-artifacts/
+
+    - name: Download armv7a debug artifacts
+      if: needs.build-armv7a-debug.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-armv7a-debug-artifacts
+        path: armv7a-debug-artifacts/
+
+    - name: Package artifacts
+      run: |
+        BRANCH=$(echo '${{ github.event.inputs.flutter_ref }}' | sed 's#/#-#g')
+        TS=$(date -u "+%Y%m%d%H%M")
+        COMMIT=$(git ls-remote https://github.com/${{ github.event.inputs.flutter_repo }} refs/heads/${{ github.event.inputs.flutter_ref }} | cut -c1-7 || echo "unknown")
+        ZIP_NAME="${BRANCH}-${TS}-${COMMIT}.zip"
+        TAG_NAME="${BRANCH}-${TS}-${COMMIT}"
+        
+        mkdir -p artifacts
+        
+        # Copy ARM64 artifacts
+        if [ -d "arm64-release-artifacts" ]; then
+          cp -r arm64-release-artifacts artifacts/arm64-release
+        fi
+        if [ -d "arm64-profile-artifacts" ]; then
+          cp -r arm64-profile-artifacts artifacts/arm64-profile
+        fi
+        if [ -d "arm64-debug-artifacts" ]; then
+          cp -r arm64-debug-artifacts artifacts/arm64-debug
+        fi
+        
+        # Copy ARMv7a artifacts
+        if [ -d "armv7a-release-artifacts" ]; then
+          cp -r armv7a-release-artifacts artifacts/armv7a-release
+        fi
+        if [ -d "armv7a-profile-artifacts" ]; then
+          cp -r armv7a-profile-artifacts artifacts/armv7a-profile
+        fi
+        if [ -d "armv7a-debug-artifacts" ]; then
+          cp -r armv7a-debug-artifacts artifacts/armv7a-debug
+        fi
+        
+        cd artifacts
+        zip -r "../$ZIP_NAME" .
+        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+        echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ZIP_NAME }}
+        path: ${{ env.ZIP_NAME }}
+        compression-level: 0
+
+    - name: Create Release
+      if: ${{ inputs.upload_release }}
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.TAG_NAME }}
+        name: Flutter Artifacts Android ${{ env.TAG_NAME }}
+        files: ${{ env.ZIP_NAME }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
