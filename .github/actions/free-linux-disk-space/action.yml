@@ -1,0 +1,32 @@
+name: 'Free Disk Space (Ubuntu)'
+description: 'Free up disk space on Ubuntu runners by removing unnecessary packages'
+runs:
+  using: 'composite'
+  steps:
+    - name: Free disk space
+      shell: bash
+      run: |
+        echo "=== Before cleanup ==="
+        df -h
+        
+        echo "=== Removing unnecessary packages ==="
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /usr/local/share/boost \
+                    $AGENT_TOOLSDIRECTORY \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go \
+                    /opt/hostedtoolcache/node
+        
+        # Clean package cache
+        sudo apt-get clean
+        sudo apt-get autoremove -y
+        
+        # Clean docker if exists
+        docker system prune -a -f || true
+        
+        echo "=== After cleanup ==="
+        df -h
+        
+        echo "=== Freed space ==="
+        echo "Cleanup completed successfully"
