@@ -27,6 +27,14 @@ jobs:
       OUT_ARM64: out/android_release_arm64
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -69,6 +77,14 @@ jobs:
       OUT_ARM64: out/android_profile_arm64
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -110,6 +126,14 @@ jobs:
       OUT_ARM64: out/android_debug_arm64
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -151,6 +175,14 @@ jobs:
       OUT_ARMV7: out/android_release
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -188,6 +220,14 @@ jobs:
       OUT_ARMV7: out/android_profile
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -225,6 +265,14 @@ jobs:
       OUT_ARMV7: out/android_debug
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     - name: Setup Flutter Engine
@@ -277,6 +325,14 @@ jobs:
       contents: write
 
     steps:
+    - name: Free disk space (Ubuntu)
+      run: |
+        sudo rm -rf /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /opt/hostedtoolcache/go
+        sudo apt-get clean
+
     - uses: actions/checkout@v4
 
     # ARM64 artifacts
