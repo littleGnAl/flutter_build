@@ -27,6 +27,7 @@ jobs:
       OUT_ARM64: out/android_release_arm64
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -34,6 +35,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -77,6 +79,7 @@ jobs:
       OUT_ARM64: out/android_profile_arm64
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -84,6 +87,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -126,6 +130,7 @@ jobs:
       OUT_ARM64: out/android_debug_arm64
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -133,6 +138,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -175,6 +181,7 @@ jobs:
       OUT_ARMV7: out/android_release
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -182,6 +189,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -220,6 +228,7 @@ jobs:
       OUT_ARMV7: out/android_profile
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -227,6 +236,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -265,6 +275,7 @@ jobs:
       OUT_ARMV7: out/android_debug
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -272,6 +283,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
@@ -325,6 +337,7 @@ jobs:
       contents: write
 
     steps:
+    # Borrow from https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
     - name: Free disk space (Ubuntu)
       run: |
         sudo rm -rf /usr/share/dotnet \
@@ -332,6 +345,7 @@ jobs:
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go
         sudo apt-get clean
+        df -h
 
     - uses: actions/checkout@v4
 
