@@ -20,7 +20,7 @@ on:
 
 jobs:
   build-arm64-release:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -43,7 +43,7 @@ jobs:
           --no-lto --prebuilt-dart-sdk
 
         ninja -C ${OUT_ARM64} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:embedding_jars \
           flutter/shell/platform/android:abi_jars
 
@@ -62,7 +62,7 @@ jobs:
         retention-days: 90
 
   build-arm64-profile:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -85,7 +85,7 @@ jobs:
           --no-lto --prebuilt-dart-sdk
 
         ninja -C ${OUT_ARM64} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:embedding_jars \
           flutter/shell/platform/android:abi_jars
 
@@ -103,7 +103,7 @@ jobs:
         retention-days: 90
 
   build-arm64-debug:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -126,7 +126,7 @@ jobs:
           --no-lto --prebuilt-dart-sdk
 
         ninja -C ${OUT_ARM64} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:embedding_jars \
           flutter/shell/platform/android:abi_jars
 
@@ -144,7 +144,7 @@ jobs:
         retention-days: 90
 
   build-armv7a-release:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -166,7 +166,7 @@ jobs:
           --runtime-mode=release \
           --no-lto --prebuilt-dart-sdk
         ninja -C ${OUT_ARMV7} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:abi_jars
 
         cp -r ./out/android_release/armeabi_v7a_release.maven-metadata.xml \
@@ -181,7 +181,7 @@ jobs:
         retention-days: 90
 
   build-armv7a-profile:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -203,7 +203,7 @@ jobs:
           --runtime-mode=profile \
           --no-lto --prebuilt-dart-sdk
         ninja -C ${OUT_ARMV7} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:abi_jars
 
         cp -r ./out/android_profile/armeabi_v7a_profile.maven-metadata.xml \
@@ -218,7 +218,7 @@ jobs:
         retention-days: 90
 
   build-armv7a-debug:
-    runs-on: macos-15 
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     env:
@@ -240,7 +240,7 @@ jobs:
           --runtime-mode=debug \
           --no-lto --prebuilt-dart-sdk
         ninja -C ${OUT_ARMV7} default \
-          clang_arm64/gen_snapshot \
+          clang_x64/gen_snapshot \
           flutter/shell/platform/android:abi_jars
 
         cp -r ./out/android_debug/armeabi_v7a_debug.maven-metadata.xml \
@@ -255,7 +255,7 @@ jobs:
         retention-days: 90
 
   package-and-release:
-    runs-on: macos-15
+    runs-on: ubuntu-22.04
     needs: [
       build-arm64-release, 
       build-arm64-profile, 
