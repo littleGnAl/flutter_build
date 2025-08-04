@@ -1,3 +1,5 @@
+# Clean up disk space on Ubuntu runners to avoid running out of space
+# See: https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
 name: 'Free Disk Space (Ubuntu)'
 description: 'Free up disk space on Ubuntu runners by removing unnecessary packages'
 runs:
