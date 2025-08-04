@@ -12,6 +12,8 @@ runs:
         echo "=== Removing unnecessary packages ==="
         sudo rm -rf /usr/share/dotnet \
                     /opt/ghc \
+                    /usr/local/share/boost \
+                    $AGENT_TOOLSDIRECTORY \
                     /opt/hostedtoolcache/CodeQL \
                     /opt/hostedtoolcache/go \
                     /opt/hostedtoolcache/node
