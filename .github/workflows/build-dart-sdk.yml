@@ -32,7 +32,7 @@ jobs:
           - os: macos-15
             arch: arm64
             out_arch: arm64
-          - os: macos-15-large
+          - os: macos-15
             arch: x64
             out_arch: x64
 
@@ -42,6 +42,13 @@ jobs:
 
       - name: Install Depot Tools
         uses: newkdev/setup-depot-tools@v1.0.1
+
+      - name: Ensure Rosetta (for x64 build on Apple Silicon)
+        if: runner.os == 'macOS' && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo softwareupdate --install-rosetta --agree-to-license || true
 
       - name: Fetch Dart source
         shell: bash
