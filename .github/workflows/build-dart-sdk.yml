@@ -1,0 +1,172 @@
+name: Build Dart SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to build from littleGnAl/sdk"
+        required: true
+        default: "main"
+        type: string
+      upload_release:
+        description: "Publish to GitHub Release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-dart-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            out_arch: arm64
+          - os: macos-15-large
+            arch: x64
+            out_arch: x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Depot Tools
+        uses: newkdev/setup-depot-tools@v1.0.1
+
+      - name: Fetch Dart source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dart-sdk-src"
+          cd "$GITHUB_WORKSPACE/dart-sdk-src"
+          # 'fetch' is provided by depot_tools and will create a 'dart' directory
+          fetch dart
+
+      - name: Checkout branch from fork (no gclient change)
+        shell: bash
+        working-directory: ${{ github.workspace }}/dart-sdk-src
+        run: |
+          set -euxo pipefail
+          # Add/Update 'fork' remote and checkout the requested branch from fork
+          git -C dart remote add fork https://github.com/littleGnAl/sdk.git || git -C dart remote set-url fork https://github.com/littleGnAl/sdk.git
+          git -C dart fetch fork "${{ github.event.inputs.branch }}" --tags --prune
+          git -C dart checkout -B "${{ github.event.inputs.branch }}" --track "fork/${{ github.event.inputs.branch }}" || git -C dart checkout "${{ github.event.inputs.branch }}"
+          git -C dart rev-parse --abbrev-ref HEAD
+          echo "DART_REV=$(git -C dart rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Sync dependencies (gclient)
+        shell: bash
+        working-directory: ${{ github.workspace }}/dart-sdk-src
+        run: |
+          set -euxo pipefail
+          # Pin to the exact commit we just checked out to avoid being reset to upstream by gclient
+          gclient sync -D --shallow --no-history --revision="dart@${DART_REV}"
+
+      - name: Build Dart SDK (Release ${{ matrix.arch }})
+        shell: bash
+        working-directory: ${{ github.workspace }}/dart-sdk-src/dart
+        env:
+          DART_ARCH: ${{ matrix.arch }}
+          OUT_ARCH: ${{ matrix.out_arch }}
+        run: |
+          set -euxo pipefail
+          python3 tools/build.py -m release -a "$DART_ARCH" create_sdk
+          # Map lower-case out_arch to actual output dir names
+          case "$OUT_ARCH" in
+            arm64)
+              echo "OUT_DIR=$PWD/xcodebuild/ReleaseARM64" >> "$GITHUB_ENV"
+              ;;
+            x64)
+              echo "OUT_DIR=$PWD/xcodebuild/ReleaseX64" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown arch: $OUT_ARCH" >&2; exit 1
+              ;;
+          esac
+
+      - name: Show build output
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ls -lah "$OUT_DIR" || true
+          du -sh "$OUT_DIR/dart-sdk" || true
+
+      - name: Upload artifact (dart-sdk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-sdk-darwin-${{ matrix.arch }}
+          path: ${{ env.OUT_DIR }}/dart-sdk
+          if-no-files-found: error
+
+  package-and-release:
+    name: Package and Release
+    runs-on: macos-15
+    needs: [build]
+    if: ${{ github.event.inputs.upload_release }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download darwin arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dart-sdk-darwin-arm64
+          path: darwin-arm64/
+        continue-on-error: true
+
+      - name: Download darwin x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dart-sdk-darwin-x64
+          path: darwin-x64/
+        continue-on-error: true
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BRANCH=$(echo '${{ github.event.inputs.branch }}' | sed 's#/#-#g')
+          TS=$(date -u "+%Y%m%d%H%M")
+          COMMIT=$(git ls-remote https://github.com/littleGnAl/sdk.git refs/heads/${{ github.event.inputs.branch }} | cut -c1-7 || echo "unknown")
+          ZIP_NAME="dart-sdk-${BRANCH}-${TS}-${COMMIT}.zip"
+          TAG_NAME="dart-sdk-${BRANCH}-${TS}-${COMMIT}"
+
+          mkdir -p artifacts
+          if [ -d "darwin-arm64" ]; then mv darwin-arm64 artifacts/darwin-arm64; fi
+          if [ -d "darwin-x64" ]; then mv darwin-x64 artifacts/darwin-x64; fi
+
+          cd artifacts
+          zip -r "../$ZIP_NAME" .
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          compression-level: 0
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Dart SDK ${{ env.TAG_NAME }}
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
