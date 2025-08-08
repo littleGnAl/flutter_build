@@ -40,22 +40,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          brew update
-          brew install ninja pkg-config coreutils || true
-
-      - name: Fetch depot_tools
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$GITHUB_WORKSPACE/depot_tools"
-          echo "DEPOT_TOOLS_UPDATE=0" >> "$GITHUB_ENV"
-          echo "DEPOT_TOOLS_METRICS=0" >> "$GITHUB_ENV"
-          echo "PATH=$GITHUB_WORKSPACE/depot_tools:$PATH" >> "$GITHUB_ENV"
+      - name: Install Depot Tools
+        uses: newkdev/setup-depot-tools@v1.0.1
 
       - name: Fetch Dart source
         shell: bash
