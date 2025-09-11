@@ -51,7 +51,10 @@ jobs:
       with:
         name: flutter-ios-simulator-arm64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-x64-debug:
@@ -86,7 +89,10 @@ jobs:
       with:
         name: flutter-ios-simulator-x64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_X64 }}/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-arm64-debug-extension-safe:
@@ -122,7 +128,10 @@ jobs:
       with:
         name: flutter-ios-simulator-arm64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-x64-debug-extension-safe:
@@ -158,7 +167,10 @@ jobs:
       with:
         name: flutter-ios-simulator-x64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-debug:
@@ -193,7 +205,10 @@ jobs:
       with:
         name: flutter-ios-arm64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_DEBUG }}/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/universal/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-debug-extension-safe:
@@ -229,7 +244,10 @@ jobs:
       with:
         name: flutter-ios-arm64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-profile:
@@ -264,7 +282,10 @@ jobs:
       with:
         name: flutter-ios-arm64-profile-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_PROFILE }}/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/universal/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-profile-extension-safe:
@@ -300,7 +321,10 @@ jobs:
       with:
         name: flutter-ios-arm64-profile-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-release:
@@ -335,7 +359,10 @@ jobs:
       with:
         name: flutter-ios-arm64-release-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_RELEASE }}/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/universal/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-release-extension-safe:
@@ -371,7 +398,10 @@ jobs:
       with:
         name: flutter-ios-arm64-release-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   package-and-release:
