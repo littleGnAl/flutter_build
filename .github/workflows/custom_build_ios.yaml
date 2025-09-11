@@ -576,27 +576,27 @@ jobs:
         cd flutter/engine/src
         
         # Create debug XCFramework
-        if [ -d "out/ios_debug" ] || [ -d "out/ios_debug_sim" ] || [ -d "out/ios_debug_sim_arm64" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/debug \
             --arm64-out-dir out/ios_debug \
             --simulator-x64-out-dir out/ios_debug_sim \
             --simulator-arm64-out-dir out/ios_debug_sim_arm64
-        fi
         
         # Create profile XCFramework
-        if [ -d "out/ios_profile" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/profile \
-            --arm64-out-dir out/ios_profile
-        fi
+            --arm64-out-dir out/ios_profile \
+            --simulator-x64-out-dir out/ios_debug_sim \
+            --simulator-arm64-out-dir out/ios_debug_sim_arm64
         
         # Create release XCFramework
-        if [ -d "out/ios_release" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/release \
-            --arm64-out-dir out/ios_release
-        fi
+            --arm64-out-dir out/ios_release \
+            --simulator-x64-out-dir out/ios_debug_sim \
+            --simulator-arm64-out-dir out/ios_debug_sim_arm64 \
+            --dsym \
+            --strip
 
     - name: Package artifacts
       run: |
