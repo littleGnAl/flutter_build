@@ -1,0 +1,614 @@
+name: Build Flutter iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: 'Flutter repo'
+        default: 'littleGnAl/flutter'
+        required: true
+        type: string
+      flutter_ref:
+        description: 'branch / tag / commit'
+        default: 'master'
+        required: true
+        type: string
+      upload_release:
+        description: 'Publish to GitHub Release'
+        default: false
+        type: boolean
+
+jobs:
+  build-ios-simulator-arm64-debug:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_SIM_ARM64: out/ci/ios_debug_sim_arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS simulator arm64 debug
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios --simulator --simulator-cpu=arm64 \
+          --runtime-mode=debug \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_SIM_ARM64} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload simulator arm64 debug artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-simulator-arm64-debug-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/**
+        retention-days: 90
+
+  build-ios-simulator-x64-debug:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_SIM_X64: out/ci/ios_debug_sim
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS simulator x64 debug
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios --simulator \
+          --runtime-mode=debug \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_SIM_X64} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload simulator x64 debug artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-simulator-x64-debug-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/**
+        retention-days: 90
+
+  build-ios-simulator-arm64-debug-extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_SIM_ARM64_EXT: out/ci/ios_debug_sim_arm64_extension_safe
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS simulator arm64 debug extension safe
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios --simulator --simulator-cpu=arm64 \
+          --runtime-mode=debug \
+          --darwin-extension-safe \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_SIM_ARM64_EXT} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload simulator arm64 debug extension safe artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-simulator-arm64-debug-extension-safe-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/**
+        retention-days: 90
+
+  build-ios-simulator-x64-debug-extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_SIM_X64_EXT: out/ci/ios_debug_sim_extension_safe
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS simulator x64 debug extension safe
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios --simulator \
+          --runtime-mode=debug \
+          --darwin-extension-safe \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_SIM_X64_EXT} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload simulator x64 debug extension safe artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-simulator-x64-debug-extension-safe-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/**
+        retention-days: 90
+
+  build-ios-arm64-debug:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_DEBUG: out/ci/ios_debug
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 debug
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=debug \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_DEBUG} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 debug artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-debug-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_DEBUG }}/**
+        retention-days: 90
+
+  build-ios-arm64-debug-extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_DEBUG_EXT: out/ci/ios_debug_extension_safe
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 debug extension safe
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=debug \
+          --darwin-extension-safe \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_DEBUG_EXT} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 debug extension safe artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-debug-extension-safe-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/**
+        retention-days: 90
+
+  build-ios-arm64-profile:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_PROFILE: out/ci/ios_profile
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 profile
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=profile \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_PROFILE} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 profile artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-profile-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_PROFILE }}/**
+        retention-days: 90
+
+  build-ios-arm64-profile-extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_PROFILE_EXT: out/ci/ios_profile_extension_safe
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 profile extension safe
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=profile \
+          --darwin-extension-safe \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_PROFILE_EXT} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 profile extension safe artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-profile-extension-safe-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/**
+        retention-days: 90
+
+  build-ios-arm64-release:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_RELEASE: out/ci/ios_release
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 release
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=release \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_RELEASE} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-release-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_RELEASE }}/**
+        retention-days: 90
+
+  build-ios-arm64-release-extension-safe:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    env:
+      OUT_RELEASE_EXT: out/ci/ios_release_extension_safe
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Flutter Engine
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Build iOS arm64 release extension safe
+      run: |
+        cd flutter/engine/src
+        ./flutter/tools/gn --ios \
+          --runtime-mode=release \
+          --darwin-extension-safe \
+          --no-lto --prebuilt-dart-sdk
+
+        ninja -C ${OUT_RELEASE_EXT} \
+          flutter/lib/snapshot:generate_snapshot_bins \
+          flutter/shell/platform/darwin/ios:flutter_framework
+
+    - name: Upload arm64 release extension safe artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: flutter-ios-arm64-release-extension-safe-artifacts
+        path: |
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/**
+        retention-days: 90
+
+  package-and-release:
+    runs-on: macos-15
+    needs: [
+      build-ios-simulator-arm64-debug,
+      build-ios-simulator-x64-debug, 
+      build-ios-arm64-debug,
+      build-ios-arm64-profile,
+      build-ios-arm64-release,
+      build-ios-simulator-arm64-debug-extension-safe,
+      build-ios-simulator-x64-debug-extension-safe,
+      build-ios-arm64-debug-extension-safe,
+      build-ios-arm64-profile-extension-safe,
+      build-ios-arm64-release-extension-safe
+    ]
+    if: always() && (
+      needs.build-ios-simulator-arm64-debug.result == 'success' || 
+      needs.build-ios-simulator-x64-debug.result == 'success' || 
+      needs.build-ios-arm64-debug.result == 'success' || 
+      needs.build-ios-arm64-profile.result == 'success' || 
+      needs.build-ios-arm64-release.result == 'success' ||
+      needs.build-ios-simulator-arm64-debug-extension-safe.result == 'success' ||
+      needs.build-ios-simulator-x64-debug-extension-safe.result == 'success' ||
+      needs.build-ios-arm64-debug-extension-safe.result == 'success' ||
+      needs.build-ios-arm64-profile-extension-safe.result == 'success' ||
+      needs.build-ios-arm64-release-extension-safe.result == 'success')
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Download all artifacts
+    - name: Download iOS simulator arm64 debug artifacts
+      if: needs.build-ios-simulator-arm64-debug.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-simulator-arm64-debug-artifacts
+        path: ios-simulator-arm64-debug-artifacts/
+
+    - name: Download iOS simulator x64 debug artifacts
+      if: needs.build-ios-simulator-x64-debug.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-simulator-x64-debug-artifacts
+        path: ios-simulator-x64-debug-artifacts/
+
+    - name: Download iOS arm64 debug artifacts
+      if: needs.build-ios-arm64-debug.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-debug-artifacts
+        path: ios-arm64-debug-artifacts/
+
+    - name: Download iOS arm64 profile artifacts
+      if: needs.build-ios-arm64-profile.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-profile-artifacts
+        path: ios-arm64-profile-artifacts/
+
+    - name: Download iOS arm64 release artifacts
+      if: needs.build-ios-arm64-release.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-release-artifacts
+        path: ios-arm64-release-artifacts/
+
+    # Download extension safe artifacts
+    - name: Download iOS simulator arm64 debug extension safe artifacts
+      if: needs.build-ios-simulator-arm64-debug-extension-safe.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-simulator-arm64-debug-extension-safe-artifacts
+        path: ios-simulator-arm64-debug-extension-safe-artifacts/
+
+    - name: Download iOS simulator x64 debug extension safe artifacts
+      if: needs.build-ios-simulator-x64-debug-extension-safe.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-simulator-x64-debug-extension-safe-artifacts
+        path: ios-simulator-x64-debug-extension-safe-artifacts/
+
+    - name: Download iOS arm64 debug extension safe artifacts
+      if: needs.build-ios-arm64-debug-extension-safe.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-debug-extension-safe-artifacts
+        path: ios-arm64-debug-extension-safe-artifacts/
+
+    - name: Download iOS arm64 profile extension safe artifacts
+      if: needs.build-ios-arm64-profile-extension-safe.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-profile-extension-safe-artifacts
+        path: ios-arm64-profile-extension-safe-artifacts/
+
+    - name: Download iOS arm64 release extension safe artifacts
+      if: needs.build-ios-arm64-release-extension-safe.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: flutter-ios-arm64-release-extension-safe-artifacts
+        path: ios-arm64-release-extension-safe-artifacts/
+
+    - name: Setup Flutter Engine for XCFramework Creation
+      uses: ./.github/actions/setup-flutter-engine
+      with:
+        flutter_repo: ${{ github.event.inputs.flutter_repo }}
+        flutter_ref: ${{ github.event.inputs.flutter_ref }}
+
+    - name: Copy artifacts to engine workspace
+      run: |
+        cd flutter/engine/src
+        
+        # Copy artifacts back to expected output directories
+        if [ -d "../../../ios-simulator-arm64-debug-artifacts" ]; then
+          mkdir -p out/ci/ios_debug_sim_arm64
+          cp -r ../../../ios-simulator-arm64-debug-artifacts/* out/ci/ios_debug_sim_arm64/
+        fi
+        
+        if [ -d "../../../ios-simulator-x64-debug-artifacts" ]; then
+          mkdir -p out/ci/ios_debug_sim
+          cp -r ../../../ios-simulator-x64-debug-artifacts/* out/ci/ios_debug_sim/
+        fi
+        
+        if [ -d "../../../ios-arm64-debug-artifacts" ]; then
+          mkdir -p out/ci/ios_debug
+          cp -r ../../../ios-arm64-debug-artifacts/* out/ci/ios_debug/
+        fi
+        
+        if [ -d "../../../ios-arm64-profile-artifacts" ]; then
+          mkdir -p out/ci/ios_profile
+          cp -r ../../../ios-arm64-profile-artifacts/* out/ci/ios_profile/
+        fi
+        
+        if [ -d "../../../ios-arm64-release-artifacts" ]; then
+          mkdir -p out/ci/ios_release
+          cp -r ../../../ios-arm64-release-artifacts/* out/ci/ios_release/
+        fi
+        
+        # Copy extension safe artifacts
+        if [ -d "../../../ios-simulator-arm64-debug-extension-safe-artifacts" ]; then
+          mkdir -p out/ci/ios_debug_sim_arm64_extension_safe
+          cp -r ../../../ios-simulator-arm64-debug-extension-safe-artifacts/* out/ci/ios_debug_sim_arm64_extension_safe/
+        fi
+        
+        if [ -d "../../../ios-simulator-x64-debug-extension-safe-artifacts" ]; then
+          mkdir -p out/ci/ios_debug_sim_extension_safe
+          cp -r ../../../ios-simulator-x64-debug-extension-safe-artifacts/* out/ci/ios_debug_sim_extension_safe/
+        fi
+        
+        if [ -d "../../../ios-arm64-debug-extension-safe-artifacts" ]; then
+          mkdir -p out/ci/ios_debug_extension_safe
+          cp -r ../../../ios-arm64-debug-extension-safe-artifacts/* out/ci/ios_debug_extension_safe/
+        fi
+        
+        if [ -d "../../../ios-arm64-profile-extension-safe-artifacts" ]; then
+          mkdir -p out/ci/ios_profile_extension_safe
+          cp -r ../../../ios-arm64-profile-extension-safe-artifacts/* out/ci/ios_profile_extension_safe/
+        fi
+        
+        if [ -d "../../../ios-arm64-release-extension-safe-artifacts" ]; then
+          mkdir -p out/ci/ios_release_extension_safe
+          cp -r ../../../ios-arm64-release-extension-safe-artifacts/* out/ci/ios_release_extension_safe/
+        fi
+
+    - name: Create XCFrameworks using official script
+      run: |
+        cd flutter/engine/src
+        
+        # Create debug XCFramework
+        if [ -d "out/ci/ios_debug" ] || [ -d "out/ci/ios_debug_sim" ] || [ -d "out/ci/ios_debug_sim_arm64" ]; then
+          python3 flutter/sky/tools/create_ios_framework.py \
+            --dst out/debug \
+            --arm64-out-dir out/ci/ios_debug \
+            --simulator-x64-out-dir out/ci/ios_debug_sim \
+            --simulator-arm64-out-dir out/ci/ios_debug_sim_arm64
+        fi
+        
+        # Create profile XCFramework
+        if [ -d "out/ci/ios_profile" ]; then
+          python3 flutter/sky/tools/create_ios_framework.py \
+            --dst out/profile \
+            --arm64-out-dir out/ci/ios_profile
+        fi
+        
+        # Create release XCFramework
+        if [ -d "out/ci/ios_release" ]; then
+          python3 flutter/sky/tools/create_ios_framework.py \
+            --dst out/release \
+            --arm64-out-dir out/ci/ios_release
+        fi
+
+    - name: Package artifacts
+      run: |
+        BRANCH=$(echo '${{ github.event.inputs.flutter_ref }}' | sed 's#/#-#g')
+        TS=$(date -u "+%Y%m%d%H%M")
+        COMMIT=$(git ls-remote https://github.com/${{ github.event.inputs.flutter_repo }} refs/heads/${{ github.event.inputs.flutter_ref }} | cut -c1-7 || echo "unknown")
+        ZIP_NAME="ios-flutter-${BRANCH}-${TS}-${COMMIT}.zip"
+        TAG_NAME="ios-flutter-${BRANCH}-${TS}-${COMMIT}"
+        
+        mkdir -p artifacts
+        
+        # Only collect the final artifacts.zip files generated by create_ios_framework.py
+        if [ -f "flutter/engine/src/out/debug/artifacts.zip" ]; then
+          cp flutter/engine/src/out/debug/artifacts.zip artifacts/debug-artifacts.zip
+        fi
+        if [ -f "flutter/engine/src/out/profile/artifacts.zip" ]; then
+          cp flutter/engine/src/out/profile/artifacts.zip artifacts/profile-artifacts.zip
+        fi
+        if [ -f "flutter/engine/src/out/release/artifacts.zip" ]; then
+          cp flutter/engine/src/out/release/artifacts.zip artifacts/release-artifacts.zip
+        fi
+        
+        # Create final zip containing only the essential artifacts.zip files
+        cd artifacts
+        zip -r "../$ZIP_NAME" .
+        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+        echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ZIP_NAME }}
+        path: ${{ env.ZIP_NAME }}
+        compression-level: 0
+
+    - name: Create Release
+      if: ${{ inputs.upload_release }}
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.TAG_NAME }}
+        name: Flutter Artifacts iOS ${{ env.TAG_NAME }}
+        files: ${{ env.ZIP_NAME }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
