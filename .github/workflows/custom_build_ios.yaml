@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_SIM_ARM64: out/ci/ios_debug_sim_arm64
+      OUT_SIM_ARM64: out/ios_debug_sim_arm64
 
     steps:
     - uses: actions/checkout@v4
@@ -51,7 +51,10 @@ jobs:
       with:
         name: flutter-ios-simulator-arm64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64 }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-x64-debug:
@@ -59,7 +62,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_SIM_X64: out/ci/ios_debug_sim
+      OUT_SIM_X64: out/ios_debug_sim
 
     steps:
     - uses: actions/checkout@v4
@@ -86,7 +89,10 @@ jobs:
       with:
         name: flutter-ios-simulator-x64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_X64 }}/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_X64 }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-arm64-debug-extension-safe:
@@ -94,7 +100,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_SIM_ARM64_EXT: out/ci/ios_debug_sim_arm64_extension_safe
+      OUT_SIM_ARM64_EXT: out/ios_debug_sim_arm64_extension_safe
 
     steps:
     - uses: actions/checkout@v4
@@ -122,7 +128,10 @@ jobs:
       with:
         name: flutter-ios-simulator-arm64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_ARM64_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-simulator-x64-debug-extension-safe:
@@ -130,7 +139,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_SIM_X64_EXT: out/ci/ios_debug_sim_extension_safe
+      OUT_SIM_X64_EXT: out/ios_debug_sim_extension_safe
 
     steps:
     - uses: actions/checkout@v4
@@ -158,7 +167,10 @@ jobs:
       with:
         name: flutter-ios-simulator-x64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_SIM_X64_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-debug:
@@ -166,7 +178,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_DEBUG: out/ci/ios_debug
+      OUT_DEBUG: out/ios_debug
 
     steps:
     - uses: actions/checkout@v4
@@ -193,7 +205,10 @@ jobs:
       with:
         name: flutter-ios-arm64-debug-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_DEBUG }}/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/universal/**
+          flutter/engine/src/${{ env.OUT_DEBUG }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-debug-extension-safe:
@@ -201,7 +216,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_DEBUG_EXT: out/ci/ios_debug_extension_safe
+      OUT_DEBUG_EXT: out/ios_debug_extension_safe
 
     steps:
     - uses: actions/checkout@v4
@@ -229,7 +244,10 @@ jobs:
       with:
         name: flutter-ios-arm64-debug-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_DEBUG_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-profile:
@@ -237,7 +255,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_PROFILE: out/ci/ios_profile
+      OUT_PROFILE: out/ios_profile
 
     steps:
     - uses: actions/checkout@v4
@@ -264,7 +282,10 @@ jobs:
       with:
         name: flutter-ios-arm64-profile-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_PROFILE }}/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/universal/**
+          flutter/engine/src/${{ env.OUT_PROFILE }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-profile-extension-safe:
@@ -272,7 +293,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_PROFILE_EXT: out/ci/ios_profile_extension_safe
+      OUT_PROFILE_EXT: out/ios_profile_extension_safe
 
     steps:
     - uses: actions/checkout@v4
@@ -300,7 +321,10 @@ jobs:
       with:
         name: flutter-ios-arm64-profile-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_PROFILE_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-release:
@@ -308,7 +332,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_RELEASE: out/ci/ios_release
+      OUT_RELEASE: out/ios_release
 
     steps:
     - uses: actions/checkout@v4
@@ -335,7 +359,10 @@ jobs:
       with:
         name: flutter-ios-arm64-release-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_RELEASE }}/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/universal/**
+          flutter/engine/src/${{ env.OUT_RELEASE }}/flutter_patched_sdk/**
         retention-days: 90
 
   build-ios-arm64-release-extension-safe:
@@ -343,7 +370,7 @@ jobs:
     timeout-minutes: 120
 
     env:
-      OUT_RELEASE_EXT: out/ci/ios_release_extension_safe
+      OUT_RELEASE_EXT: out/ios_release_extension_safe
 
     steps:
     - uses: actions/checkout@v4
@@ -371,7 +398,10 @@ jobs:
       with:
         name: flutter-ios-arm64-release-extension-safe-artifacts
         path: |
-          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/Flutter.framework/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/Flutter.xcframework/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/universal/**
+          flutter/engine/src/${{ env.OUT_RELEASE_EXT }}/flutter_patched_sdk/**
         retention-days: 90
 
   package-and-release:
@@ -491,54 +521,54 @@ jobs:
         
         # Copy artifacts back to expected output directories
         if [ -d "../../../ios-simulator-arm64-debug-artifacts" ]; then
-          mkdir -p out/ci/ios_debug_sim_arm64
-          cp -r ../../../ios-simulator-arm64-debug-artifacts/* out/ci/ios_debug_sim_arm64/
+          mkdir -p out/ios_debug_sim_arm64
+          cp -r ../../../ios-simulator-arm64-debug-artifacts/* out/ios_debug_sim_arm64/
         fi
         
         if [ -d "../../../ios-simulator-x64-debug-artifacts" ]; then
-          mkdir -p out/ci/ios_debug_sim
-          cp -r ../../../ios-simulator-x64-debug-artifacts/* out/ci/ios_debug_sim/
+          mkdir -p out/ios_debug_sim
+          cp -r ../../../ios-simulator-x64-debug-artifacts/* out/ios_debug_sim/
         fi
         
         if [ -d "../../../ios-arm64-debug-artifacts" ]; then
-          mkdir -p out/ci/ios_debug
-          cp -r ../../../ios-arm64-debug-artifacts/* out/ci/ios_debug/
+          mkdir -p out/ios_debug
+          cp -r ../../../ios-arm64-debug-artifacts/* out/ios_debug/
         fi
         
         if [ -d "../../../ios-arm64-profile-artifacts" ]; then
-          mkdir -p out/ci/ios_profile
-          cp -r ../../../ios-arm64-profile-artifacts/* out/ci/ios_profile/
+          mkdir -p out/ios_profile
+          cp -r ../../../ios-arm64-profile-artifacts/* out/ios_profile/
         fi
         
         if [ -d "../../../ios-arm64-release-artifacts" ]; then
-          mkdir -p out/ci/ios_release
-          cp -r ../../../ios-arm64-release-artifacts/* out/ci/ios_release/
+          mkdir -p out/ios_release
+          cp -r ../../../ios-arm64-release-artifacts/* out/ios_release/
         fi
         
         # Copy extension safe artifacts
         if [ -d "../../../ios-simulator-arm64-debug-extension-safe-artifacts" ]; then
-          mkdir -p out/ci/ios_debug_sim_arm64_extension_safe
-          cp -r ../../../ios-simulator-arm64-debug-extension-safe-artifacts/* out/ci/ios_debug_sim_arm64_extension_safe/
+          mkdir -p out/ios_debug_sim_arm64_extension_safe
+          cp -r ../../../ios-simulator-arm64-debug-extension-safe-artifacts/* out/ios_debug_sim_arm64_extension_safe/
         fi
         
         if [ -d "../../../ios-simulator-x64-debug-extension-safe-artifacts" ]; then
-          mkdir -p out/ci/ios_debug_sim_extension_safe
-          cp -r ../../../ios-simulator-x64-debug-extension-safe-artifacts/* out/ci/ios_debug_sim_extension_safe/
+          mkdir -p out/ios_debug_sim_extension_safe
+          cp -r ../../../ios-simulator-x64-debug-extension-safe-artifacts/* out/ios_debug_sim_extension_safe/
         fi
         
         if [ -d "../../../ios-arm64-debug-extension-safe-artifacts" ]; then
-          mkdir -p out/ci/ios_debug_extension_safe
-          cp -r ../../../ios-arm64-debug-extension-safe-artifacts/* out/ci/ios_debug_extension_safe/
+          mkdir -p out/ios_debug_extension_safe
+          cp -r ../../../ios-arm64-debug-extension-safe-artifacts/* out/ios_debug_extension_safe/
         fi
         
         if [ -d "../../../ios-arm64-profile-extension-safe-artifacts" ]; then
-          mkdir -p out/ci/ios_profile_extension_safe
-          cp -r ../../../ios-arm64-profile-extension-safe-artifacts/* out/ci/ios_profile_extension_safe/
+          mkdir -p out/ios_profile_extension_safe
+          cp -r ../../../ios-arm64-profile-extension-safe-artifacts/* out/ios_profile_extension_safe/
         fi
         
         if [ -d "../../../ios-arm64-release-extension-safe-artifacts" ]; then
-          mkdir -p out/ci/ios_release_extension_safe
-          cp -r ../../../ios-arm64-release-extension-safe-artifacts/* out/ci/ios_release_extension_safe/
+          mkdir -p out/ios_release_extension_safe
+          cp -r ../../../ios-arm64-release-extension-safe-artifacts/* out/ios_release_extension_safe/
         fi
 
     - name: Create XCFrameworks using official script
@@ -546,27 +576,27 @@ jobs:
         cd flutter/engine/src
         
         # Create debug XCFramework
-        if [ -d "out/ci/ios_debug" ] || [ -d "out/ci/ios_debug_sim" ] || [ -d "out/ci/ios_debug_sim_arm64" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/debug \
-            --arm64-out-dir out/ci/ios_debug \
-            --simulator-x64-out-dir out/ci/ios_debug_sim \
-            --simulator-arm64-out-dir out/ci/ios_debug_sim_arm64
-        fi
+            --arm64-out-dir out/ios_debug \
+            --simulator-x64-out-dir out/ios_debug_sim \
+            --simulator-arm64-out-dir out/ios_debug_sim_arm64
         
         # Create profile XCFramework
-        if [ -d "out/ci/ios_profile" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/profile \
-            --arm64-out-dir out/ci/ios_profile
-        fi
+            --arm64-out-dir out/ios_profile \
+            --simulator-x64-out-dir out/ios_debug_sim \
+            --simulator-arm64-out-dir out/ios_debug_sim_arm64
         
         # Create release XCFramework
-        if [ -d "out/ci/ios_release" ]; then
-          python3 flutter/sky/tools/create_ios_framework.py \
+        python3 flutter/sky/tools/create_ios_framework.py \
             --dst out/release \
-            --arm64-out-dir out/ci/ios_release
-        fi
+            --arm64-out-dir out/ios_release \
+            --simulator-x64-out-dir out/ios_debug_sim \
+            --simulator-arm64-out-dir out/ios_debug_sim_arm64 \
+            --dsym \
+            --strip
 
     - name: Package artifacts
       run: |
