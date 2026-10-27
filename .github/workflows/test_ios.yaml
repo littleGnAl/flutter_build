@@ -1,0 +1,176 @@
+name: Test Flutter iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: Flutter repository (owner/name)
+        type: string
+        required: true
+        default: littleGnAl/flutter
+      flutter_ref:
+        description: Flutter branch, tag, or commit to test
+        type: string
+        required: true
+        default: master
+      xcode_version:
+        description: Installed Xcode version; empty selects newest stable image installation
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      flutter_repo:
+        type: string
+        default: littleGnAl/flutter
+      flutter_ref:
+        type: string
+        default: master
+      resolved_sha:
+        description: Commit resolved once by the calling workflow
+        type: string
+        default: ''
+      xcode_version:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        env:
+          FLUTTER_REPO: ${{ inputs.flutter_repo }}
+          FLUTTER_REF: ${{ inputs.flutter_ref }}
+          RESOLVED_SHA: ${{ inputs.resolved_sha }}
+        run: |
+          if [[ -n "$RESOLVED_SHA" ]]; then
+            [[ "$RESOLVED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+            echo "sha=$RESOLVED_SHA" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO" --ref "$FLUTTER_REF"
+          fi
+
+  native:
+    name: Native embedding and scenario (${{ matrix.variant }})
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [normal, extension-safe]
+    env:
+      FLUTTER_ROOT: ${{ github.workspace }}/flutter
+      FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results
+      COCOAPODS_DISABLE_STATS: 'true'
+      LANG: en_US.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode before gclient SDK hooks
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+        run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'true'
+      - name: Build and run the selected ref's native test suites
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          args=()
+          if [[ "$VARIANT" == extension-safe ]]; then args+=(--extension-safe); fi
+          python3 scripts/ci/ios.py native --jobs 2 "${args[@]}"
+      - name: Collect simulator diagnostics
+        if: always()
+        run: python3 scripts/ci/ios.py diagnostics
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-native-${{ matrix.variant }}-${{ needs.resolve.outputs.sha }}
+          path: test-results/
+          retention-days: 14
+
+  simulator:
+    name: DeviceLab simulator functionality with source Engine
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      FLUTTER_ROOT: ${{ github.workspace }}/flutter
+      FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results
+      COCOAPODS_DISABLE_STATS: 'true'
+      LANG: en_US.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode before gclient SDK hooks
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+        run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'true'
+      - name: Build local host and simulator Engines and run all simulator tasks
+        run: python3 scripts/ci/ios.py simulator --jobs 2
+      - name: Collect simulator diagnostics
+        if: always()
+        run: python3 scripts/ci/ios.py diagnostics
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-source-simulator-${{ needs.resolve.outputs.sha }}
+          path: test-results/
+          retention-days: 14
+
+  build-compatibility:
+    name: SDK compatibility (${{ matrix.task }}, baseline Engine)
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        task:
+          - module_test_ios
+          - build_ios_framework_module_test
+          - plugin_test_ios
+          - plugin_test_darwin
+    env:
+      FLUTTER_ROOT: ${{ github.workspace }}/flutter
+      FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results
+      COCOAPODS_DISABLE_STATS: 'true'
+      LANG: en_US.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+        run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'false'
+      - name: Run complete upstream task across its original build modes
+        env:
+          TASK: ${{ matrix.task }}
+        run: python3 scripts/ci/ios.py baseline --task "$TASK"
+      - name: Collect simulator diagnostics
+        if: always()
+        run: python3 scripts/ci/ios.py diagnostics
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-baseline-${{ matrix.task }}-${{ needs.resolve.outputs.sha }}
+          path: test-results/
+          retention-days: 14

@@ -1,0 +1,29 @@
+name: Validate Flutter test workflows
+on:
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'scripts/ci/**'
+  push:
+    paths:
+      - '.github/**'
+      - 'scripts/ci/**'
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+      - name: Test planning, artifact selection and failure handling
+        run: python3 -m unittest discover -s scripts/ci/tests -v
+      - name: Validate GitHub Actions syntax
+        run: |
+          curl -fL --retry 2 -o "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check -
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/actionlint"
+          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck= -pyflakes=

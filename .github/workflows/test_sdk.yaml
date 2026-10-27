@@ -1,0 +1,153 @@
+name: Test Flutter SDK and Host Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: Flutter repository
+        type: string
+        default: littleGnAl/flutter
+        required: true
+      flutter_ref:
+        description: Flutter branch, tag, or commit
+        type: string
+        default: master
+        required: true
+  workflow_call:
+    inputs:
+      flutter_repo:
+        type: string
+        default: littleGnAl/flutter
+      flutter_ref:
+        type: string
+        default: master
+      resolved_sha:
+        description: Optional SHA resolved by the all-platform workflow
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-22.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve requested Flutter revision
+        id: resolve
+        env:
+          FLUTTER_REPO: ${{ inputs.flutter_repo }}
+          FLUTTER_REF: ${{ inputs.resolved_sha || inputs.flutter_ref }}
+        run: python3 scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO" --ref "$FLUTTER_REF"
+
+  plan:
+    needs: resolve
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.flutter_repo }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: flutter
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-python
+      - name: Read complete partitions from the requested Flutter CI
+        id: plan
+        run: python3 scripts/ci/sdk.py plan >> "$GITHUB_OUTPUT"
+
+  sdk:
+    name: ${{ matrix.name }}
+    needs: [resolve, plan]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Free Linux disk space
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/free-linux-disk-space
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+      - name: Use Java 17 for the official compatibility shard
+        if: matrix.shard == 'android_java17_tool_integration_tests'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install the public CIPD client for the archived Android preview SDK
+        if: matrix.shard == 'android_preview_tool_integration_tests'
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/sdk-preview-depot-tools"
+          echo "$RUNNER_TEMP/sdk-preview-depot-tools" >> "$GITHUB_PATH"
+      - name: Run all cases in the official SDK partition
+        env:
+          SDK_SHARD: ${{ matrix.shard }}
+          SDK_SUBSHARD: ${{ matrix.subshard }}
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a python3 scripts/ci/sdk.py sdk --shard "$SDK_SHARD" --subshard "$SDK_SUBSHARD"
+          else
+            python3 scripts/ci/sdk.py sdk --shard "$SDK_SHARD" --subshard "$SDK_SUBSHARD"
+          fi
+      - name: Upload results and strict golden evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-${{ matrix.name }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  host-engine:
+    name: Host Engine ${{ matrix.runner }} ${{ matrix.mode }}
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        runner: [ubuntu-22.04, macos-15]
+        mode: [debug, profile, release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Free Linux disk space
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/free-linux-disk-space
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'true'
+      - name: Build and test the requested native engine source
+        env:
+          ENGINE_MODE: ${{ matrix.mode }}
+        run: python3 scripts/ci/sdk.py engine-host --mode "$ENGINE_MODE"
+      - name: Upload source build test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-engine-${{ matrix.runner }}-${{ matrix.mode }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14

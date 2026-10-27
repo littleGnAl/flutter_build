@@ -1,0 +1,11 @@
+name: Set up CI Python
+description: Install the Python dependencies used by the test planners.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/flutter-ci-python"
+        "$RUNNER_TEMP/flutter-ci-python/bin/python" -m pip install --disable-pip-version-check -r "$GITHUB_WORKSPACE/.github/requirements-ci.txt"
+        echo "$RUNNER_TEMP/flutter-ci-python/bin" >> "$GITHUB_PATH"
+        echo "PYTHONDONTWRITEBYTECODE=1" >> "$GITHUB_ENV"

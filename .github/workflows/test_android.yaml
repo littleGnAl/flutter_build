@@ -1,0 +1,242 @@
+name: Test Flutter Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: Flutter repository
+        type: string
+        default: littleGnAl/flutter
+        required: true
+      flutter_ref:
+        description: Flutter branch, tag, or commit
+        type: string
+        default: master
+        required: true
+  workflow_call:
+    inputs:
+      flutter_repo:
+        type: string
+        default: littleGnAl/flutter
+      flutter_ref:
+        type: string
+        default: master
+      resolved_sha:
+        description: Optional commit already resolved by the calling workflow
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      build: ${{ steps.plan.outputs.build }}
+      emulator: ${{ steps.plan.outputs.emulator }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ci-python
+      - id: resolve
+        env:
+          FLUTTER_REPO: ${{ inputs.flutter_repo }}
+          FLUTTER_REF: ${{ inputs.resolved_sha || inputs.flutter_ref }}
+        run: python scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO" --ref "$FLUTTER_REF"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.flutter_repo }}
+          ref: ${{ steps.resolve.outputs.sha }}
+          path: flutter
+          persist-credentials: false
+      - id: plan
+        run: python scripts/ci/android.py --flutter-root flutter plan
+
+  embedding:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [java, native]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-linux-disk-space
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'true'
+      - name: Java embedding tests
+        if: matrix.suite == 'java'
+        run: python scripts/ci/android.py java
+      - name: Build native tests
+        if: matrix.suite == 'native'
+        run: python scripts/ci/android.py build-native
+      - id: avd
+        if: matrix.suite == 'native'
+        run: python scripts/ci/android.py native-avd
+      - name: Enable KVM
+        if: matrix.suite == 'native'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Run native tests on the upstream AVD configuration
+        if: matrix.suite == 'native'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ steps.avd.outputs.api }}
+          target: ${{ steps.avd.outputs.target }}
+          arch: x86_64
+          cores: 2
+          ram-size: 2048M
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
+          script: python scripts/ci/android.py native
+      - name: Collect Android diagnostics
+        if: always()
+        run: |
+          mkdir -p test-results
+          if command -v adb >/dev/null; then adb logcat -d > test-results/logcat.txt 2>&1 || true; fi
+          find flutter/engine/src/out -path '*/robolectric_tests/build/reports' -type d -exec cp -R {} test-results/ \; 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-${{ matrix.suite }}-results
+          path: test-results
+          retention-days: 14
+
+  app-engine:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [debug, profile, release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-linux-disk-space
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'true'
+      - name: Build matching Android and host engines
+        env:
+          MODE: ${{ matrix.mode }}
+        run: python scripts/ci/android.py build-app --mode "$MODE"
+      - name: Package self-contained runtime outputs
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          python scripts/ci/android.py validate-app --modes "$MODE"
+          tar --dereference -C flutter/engine/src --exclude='*/obj' --exclude='*/.ninja_deps' --exclude='*/.ninja_log' -czf "engine-app-$MODE.tar.gz" "out/ci/android_${MODE}_x64" "out/ci/host_${MODE}_test"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-app-engine-${{ matrix.mode }}
+          path: engine-app-${{ matrix.mode }}.tar.gz
+          compression-level: 0
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-app-build-${{ matrix.mode }}-logs
+          path: test-results
+          retention-days: 14
+
+  emulator:
+    needs: [resolve, app-engine]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.resolve.outputs.emulator) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'false'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: android-app-engine-*
+          merge-multiple: true
+          path: engine-artifacts
+      - name: Restore source-built engines
+        run: |
+          for archive in engine-artifacts/engine-app-*.tar.gz; do
+            tar -C flutter/engine/src -xzf "$archive"
+          done
+          python scripts/ci/android.py validate-app --modes debug,profile,release
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Run functional task with matching source engines
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          TASK_NAME: ${{ matrix.task }}
+          ENGINE_MODES: ${{ matrix.modes }}
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          ndk: ${{ matrix.ndk }}
+          cores: 2
+          ram-size: 2048M
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
+          script: python scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          mkdir -p test-results
+          if command -v adb >/dev/null; then adb logcat -d > test-results/logcat.txt 2>&1 || true; fi
+          python scripts/ci/android.py restore-flutter-wrapper
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-functional-${{ matrix.id }}
+          path: test-results
+          retention-days: 14
+
+  build-compatibility:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.resolve.outputs.build) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-flutter-tests
+        with:
+          flutter_repo: ${{ inputs.flutter_repo }}
+          flutter_sha: ${{ needs.resolve.outputs.sha }}
+          engine: 'false'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - name: Select the task's JDK after shared bootstrap
+        run: flutter config --jdk-dir "$JAVA_HOME"
+      - name: AAR / Gradle / add-to-app compatibility against baseline artifacts
+        env:
+          TASK_NAME: ${{ matrix.task }}
+        run: python scripts/ci/android.py task --name "$TASK_NAME"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-build-${{ matrix.task }}
+          path: test-results
+          retention-days: 14

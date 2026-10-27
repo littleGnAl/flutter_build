@@ -1,0 +1,73 @@
+name: Test Flutter all supported suites
+run-name: Flutter tests · ${{ inputs.flutter_repo }}@${{ inputs.flutter_ref }}
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_repo:
+        description: Flutter repository
+        default: littleGnAl/flutter
+        required: true
+        type: string
+      flutter_ref:
+        description: Flutter branch, tag or commit
+        default: master
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-22.04
+    outputs:
+      sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve the requested source revision once
+        id: ref
+        env:
+          FLUTTER_REPO_INPUT: ${{ inputs.flutter_repo }}
+          FLUTTER_REF_INPUT: ${{ inputs.flutter_ref }}
+        run: python3 scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO_INPUT" --ref "$FLUTTER_REF_INPUT"
+      - name: Record revision
+        env:
+          SOURCE_SHA: ${{ steps.ref.outputs.sha }}
+          SOURCE_REPO: ${{ inputs.flutter_repo }}
+          SOURCE_REF: ${{ inputs.flutter_ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as report:
+              report.write("Flutter source: " + os.environ["SOURCE_REPO"] + "\n\n")
+              report.write("Requested ref: " + os.environ["SOURCE_REF"] + "\n\n")
+              report.write("Resolved commit: " + os.environ["SOURCE_SHA"] + "\n")
+          PY
+  android:
+    needs: resolve
+    uses: ./.github/workflows/test_android.yaml
+    with:
+      flutter_repo: ${{ inputs.flutter_repo }}
+      flutter_ref: ${{ inputs.flutter_ref }}
+      resolved_sha: ${{ needs.resolve.outputs.sha }}
+  ios:
+    needs: resolve
+    uses: ./.github/workflows/test_ios.yaml
+    with:
+      flutter_repo: ${{ inputs.flutter_repo }}
+      flutter_ref: ${{ inputs.flutter_ref }}
+      resolved_sha: ${{ needs.resolve.outputs.sha }}
+  sdk:
+    needs: resolve
+    uses: ./.github/workflows/test_sdk.yaml
+    with:
+      flutter_repo: ${{ inputs.flutter_repo }}
+      flutter_ref: ${{ inputs.flutter_ref }}
+      resolved_sha: ${{ needs.resolve.outputs.sha }}
+  android-goldens:
+    needs: resolve
+    uses: ./.github/workflows/test_android_goldens.yaml
+    with:
+      flutter_repo: ${{ inputs.flutter_repo }}
+      flutter_ref: ${{ inputs.flutter_ref }}
+      resolved_sha: ${{ needs.resolve.outputs.sha }}
