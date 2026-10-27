@@ -50,6 +50,13 @@ jobs:
       - uses: ./.github/actions/setup-ci-python
       - id: plan
         run: python3 scripts/ci/golden.py --plan --flutter-root flutter >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-golden-plan-${{ steps.ref.outputs.sha }}
+          path: test-results/golden/plan.json
+          if-no-files-found: warn
+          retention-days: 14
   golden:
     needs: resolve
     runs-on: ubuntu-22.04
@@ -81,6 +88,12 @@ jobs:
           flutter_repo: ${{ inputs.flutter_repo }}
           flutter_sha: ${{ needs.resolve.outputs.sha }}
           engine: 'true'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - name: Select the official task's JDK
+        run: flutter config --jdk-dir "$JAVA_HOME"
       - name: Generate baseline and compare the target revision
         uses: reactivecircus/android-emulator-runner@v2
         with:

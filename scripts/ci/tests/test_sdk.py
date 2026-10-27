@@ -1,7 +1,13 @@
 import importlib.util
+import io
+import json
+import os
 from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location("sdk", Path(__file__).parents[1] / "sdk.py")
@@ -23,6 +29,24 @@ FRAMEWORK = "await selectSubshard(<String, ShardRunner>{'widgets': runWidgets, '
 
 
 class MatrixTests(unittest.TestCase):
+    def test_legacy_commands_and_missing_new_suites_are_supported(self):
+        # Flutter 3.35.7 (225e8f4) schedules commands under tool_tests and has
+        # no Java 17 integration shard. Preserve its actual command names.
+        config = configuration()
+        config["targets"] = [item for item in config["targets"] if item["properties"]["shard"]
+                             not in {"tool_tests_commands", "android_java17_tool_integration_tests"}]
+        config["targets"].append(target("Linux tool_tests_commands", "tool_tests", "commands"))
+        entries = sdk.ci_matrix(config, FRAMEWORK)["include"]
+        self.assertTrue(any(entry["shard"] == "tool_tests" and entry["subshard"] == "commands" for entry in entries))
+        self.assertFalse(any(entry["shard"] == "tool_tests_commands" for entry in entries))
+
+    def test_jdk_comes_from_the_requested_ci_target(self):
+        config = configuration()
+        config["targets"][0]["properties"]["dependencies"] = '[{"dependency":"open_jdk","version":"version:21"}]'
+        entries = sdk.ci_matrix(config, FRAMEWORK)["include"]
+        entry = next(entry for entry in entries if entry["source_target"] == config["targets"][0]["name"])
+        self.assertEqual(entry["jdk"], "21")
+
     def test_yaml_preserves_unquoted_numeric_partition(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yaml"
@@ -52,11 +76,45 @@ class MatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Incomplete"):
             sdk.ci_matrix(config, FRAMEWORK)
 
-    def test_missing_suite_is_an_explicit_compatibility_error(self):
+    def test_missing_core_suite_is_an_explicit_compatibility_error(self):
         config = configuration()
-        config["targets"] = [item for item in config["targets"] if item["properties"]["shard"] != "tool_tests_commands"]
-        with self.assertRaisesRegex(ValueError, "tool_tests_commands"):
+        config["targets"] = [item for item in config["targets"] if item["properties"]["shard"] != "analyze"]
+        with self.assertRaisesRegex(ValueError, "analyze"):
             sdk.ci_matrix(config, FRAMEWORK)
+
+    def test_legacy_java11_entry_is_retained_and_missing_modern_suites_are_reported(self):
+        config = configuration()
+        config["targets"] = [item for item in config["targets"] if item["properties"]["shard"]
+                             not in {"tool_tests_commands", "android_java17_tool_integration_tests"}]
+        config["targets"].append(target("Linux commands", "tool_tests", "commands"))
+        matrix = sdk.ci_matrix(config, FRAMEWORK)
+        self.assertTrue(any(entry["shard"] == "android_java11_tool_integration_tests" for entry in matrix["include"]))
+        diagnostics = "\n".join(sdk.plan_diagnostics(matrix))
+        self.assertIn("tool_tests_commands: not configured", diagnostics)
+        self.assertIn("legacy tool_tests/commands", diagnostics)
+        self.assertIn("android_java17_tool_integration_tests: not configured", diagnostics)
+        self.assertIn("android_java11_tool_integration_tests instead", diagnostics)
+
+    def test_plan_cli_reports_absent_suites_without_polluting_matrix_output(self):
+        config = configuration()
+        config["targets"] = [item for item in config["targets"] if item["properties"]["shard"]
+                             not in sdk.OPTIONAL_SDK_SHARDS]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".ci.yaml").write_text(json.dumps(config))
+            runner = root / "dev/bots/suite_runners/run_framework_tests.dart"
+            runner.parent.mkdir(parents=True)
+            runner.write_text(FRAMEWORK)
+            summary = root / "step-summary.md"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "argv", ["sdk.py", "--flutter-root", str(root), "plan"]), \
+                    mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}), \
+                    redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(sdk.main(), 0)
+            self.assertTrue(stdout.getvalue().startswith("matrix="))
+            json.loads(stdout.getvalue().removeprefix("matrix="))
+            self.assertIn("android_java17_tool_integration_tests: not configured", summary.read_text())
+            self.assertIn("::notice::", stderr.getvalue())
 
 
 class StrictGoldenTests(unittest.TestCase):
@@ -76,6 +134,18 @@ class StrictGoldenTests(unittest.TestCase):
         self.assertIn("comparison skipped", patched)
         self.assertIn("Strict golden compared:", patched)
         self.assertNotIn("io.Platform.environment", patched)
+
+    def test_legacy_local_comparator_still_fails_on_missing_baseline(self):
+        # Flutter 3.35.7 used a separate ComparisonResult declaration and did
+        # not await update(); these are not reasons to disable strict goldens.
+        source = self.source().replace(
+            "      await update(golden, imageBytes);\n      return true;\n    }\n\n    final List<int> goldenBytes",
+            "      update(golden, imageBytes);\n      return true;\n    }\n\n    ComparisonResult result;\n    final List<int> goldenBytes",
+        )
+        patched = sdk.strict_goldens(source)
+        self.assertIn("has no baseline", patched)
+        self.assertEqual(patched.count("FLUTTER_STRICT_GOLDENS"), 6)
+        self.assertIn("await update(golden, imageBytes);", patched)
 
     def test_changed_or_duplicate_contract_is_not_partially_patched(self):
         for source in (self.source().replace("goldenBytes", "differentName"), self.source() + self.source()):

@@ -50,11 +50,15 @@ def source_matrix(root):
     from android import avd_configuration, dependency
 
     ci = yaml.load((root / ".ci.yaml").read_text(), Loader=yaml.BaseLoader)
+    runner = (root / "dev/bots/test.dart").read_text()
+    registered = set(re.findall(r"['\"]([a-z][a-z0-9_]+)['\"]\s*:", runner))
     matrix = []
     for suite in SUITES:
         candidates = [target for target in ci["targets"]
                       if target.get("properties", {}).get("shard") == suite
                       and target["name"].startswith("Linux_android_emu")]
+        if suite not in registered and not candidates:
+            continue  # This Flutter version predates the suite.
         if len(candidates) != 1:
             raise ValueError(f"Expected one official emulator target for {suite}")
         target = candidates[0]
@@ -63,7 +67,12 @@ def source_matrix(root):
         avd_version = (dependency(target["properties"], "android_virtual_device")
                        or dependency(platform_props, "android_virtual_device"))
         avd = avd_configuration(avd_version)
-        matrix.append({"suite": suite, **avd})
+        jdk = dependency(target["properties"], "open_jdk") or dependency(platform_props, "open_jdk")
+        if not jdk or not jdk.startswith("version:"):
+            raise ValueError(f"No supported JDK dependency for {suite}")
+        matrix.append({"suite": suite, "jdk": jdk.removeprefix("version:"), **avd})
+    if not matrix:
+        raise ValueError("This Flutter ref has no supported Android golden emulator suites")
     return {"include": matrix}
 
 
@@ -261,7 +270,20 @@ def main():
     parser.add_argument("--outputs", type=Path, default=Path(os.environ.get("FLUTTER_TEST_OUTPUTS_DIR", "test-results")) / "golden")
     args = parser.parse_args()
     if args.plan:
-        print("matrix=" + json.dumps(source_matrix(args.flutter_root), separators=(",", ":")))
+        matrix = source_matrix(args.flutter_root)
+        available = {entry["suite"] for entry in matrix["include"]}
+        unavailable = sorted(set(SUITES) - available)
+        args.outputs.mkdir(parents=True, exist_ok=True)
+        (args.outputs / "plan.json").write_text(json.dumps({
+            "matrix": matrix, "unavailable_in_ref": unavailable,
+        }, indent=2) + "\n")
+        if unavailable:
+            message = "Android golden suites not present in this Flutter version: " + ", ".join(unavailable)
+            print(message, file=sys.stderr)
+            if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+                with Path(summary).open("a") as output:
+                    output.write("\n" + message + "\n")
+        print("matrix=" + json.dumps(matrix, separators=(",", ":")))
         return 0
     return Golden(args.flutter_root, args.outputs, args.suite).execute()
 

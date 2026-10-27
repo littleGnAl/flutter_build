@@ -12,10 +12,10 @@ inputs:
     default: 'false'
 outputs:
   baseline_sha:
-    description: Official upstream merge base used to bootstrap Dart and SDK tools
+    description: Official upstream merge base used for regression baselines
     value: ${{ steps.baseline.outputs.baseline_sha }}
   engine_hash:
-    description: Official prebuilt bootstrap Engine content hash
+    description: Published bootstrap Engine from the release pin or upstream version policy
     value: ${{ steps.baseline.outputs.engine_hash }}
 runs:
   using: composite

@@ -20,9 +20,10 @@ def inspect(root):
         for mode in ("debug", "profile", "release"):
             build, _ = sdk.host_configuration(root, mode, system, machine)
             native.append({"system": system, "mode": mode, "builder": build["name"]})
-    for task in ios.BASELINE_TASKS:
-        if not ios.task_is_configured(root, task):
-            raise ValueError(f"Required iOS compatibility task is absent: {task}")
+    ios_unavailable = []
+    ios_source_tasks = ios.simulator_tasks(root, unavailable=ios_unavailable)
+    ios_compatibility_tasks = ios.baseline_tasks(root, unavailable=ios_unavailable)
+    golden_jobs = golden.source_matrix(root)["include"]
     return {
         "source_sha": subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
         "sdk": sdk_jobs,
@@ -31,9 +32,15 @@ def inspect(root):
         "android_emulator": android_jobs["emulator"]["include"],
         "android_native_avd": android.Android(root).native_avd(),
         "ios_native": [ios.find_build(root, "ios", extension)["name"] for extension in (False, True)],
-        "ios_source_simulator_tasks": ios.simulator_tasks(root),
-        "ios_baseline_compatibility_tasks": list(ios.BASELINE_TASKS),
-        "android_golden": golden.source_matrix(root)["include"],
+        "ios_source_simulator_tasks": ios_source_tasks,
+        "ios_baseline_compatibility_tasks": ios_compatibility_tasks,
+        "android_golden": golden_jobs,
+        "unavailable_in_ref": {
+            "sdk": sdk.plan_diagnostics({"include": sdk_jobs}),
+            "android": android_jobs["coverage"]["unavailable"],
+            "ios": ios_unavailable,
+            "golden": sorted(set(golden.SUITES) - {job["suite"] for job in golden_jobs}),
+        },
         "hosted_exclusions": {
             "physical_devices": "device performance, power, OEM GPU/hardware and device-only assertions",
             "mac_host_engine": sorted(sdk.GPU_EXECUTABLES),

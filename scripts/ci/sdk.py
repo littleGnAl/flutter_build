@@ -18,11 +18,14 @@ import sys
 import urllib.request
 
 
-SDK_SHARDS = {
-    "framework_tests", "tool_tests", "tool_tests_commands", "tool_integration_tests",
-    "web_tool_tests", "build_tests", "analyze", "android_preview_tool_integration_tests",
-    "android_java17_tool_integration_tests",
+CORE_SDK_SHARDS = {
+    "framework_tests", "tool_tests", "tool_integration_tests", "web_tool_tests", "build_tests", "analyze",
 }
+OPTIONAL_SDK_SHARDS = {
+    "tool_tests_commands", "android_preview_tool_integration_tests",
+    "android_java11_tool_integration_tests", "android_java17_tool_integration_tests",
+}
+SDK_SHARDS = CORE_SDK_SHARDS | OPTIONAL_SDK_SHARDS
 GPU_EXECUTABLES = {"impeller_unittests", "impeller_dart_unittests"}
 GOLDENS_PATH = Path("packages/flutter_goldens/lib/flutter_goldens.dart")
 
@@ -43,12 +46,20 @@ def ci_matrix(configuration: dict, test_source: str) -> dict:
             runner, preference = "macos-15", {"Mac_arm64": 0, "Mac": 1, "Mac_x64": 2}[prefix]
         else:
             continue
-        if shard in {"analyze", "android_preview_tool_integration_tests", "android_java17_tool_integration_tests"} and runner != "ubuntu-22.04":
+        if shard in {"analyze", "android_preview_tool_integration_tests", "android_java11_tool_integration_tests", "android_java17_tool_integration_tests"} and runner != "ubuntu-22.04":
             continue
         subshard = str(properties.get("subshard", ""))
+        dependencies = properties.get("dependencies", [])
+        if isinstance(dependencies, str):
+            dependencies = json.loads(dependencies)
+        jdk = next((dependency["version"] for dependency in dependencies if dependency["dependency"] == "open_jdk"), "")
+        if jdk:
+            if not jdk.startswith("version:"):
+                raise ValueError(f"Unsupported JDK dependency for {name}: {jdk}")
+            jdk = jdk.removeprefix("version:")
         key = runner, shard, subshard
         entry = {"runner": runner, "shard": shard, "subshard": subshard,
-                 "name": f"{runner}-{shard}-{subshard or 'all'}", "source_target": name}
+                 "name": f"{runner}-{shard}-{subshard or 'all'}", "source_target": name, "jdk": jdk}
         if key not in selected or preference < selected[key][0]:
             selected[key] = preference, entry
 
@@ -68,10 +79,10 @@ def ci_matrix(configuration: dict, test_source: str) -> dict:
         key = runner, "framework_tests", subshard
         selected.setdefault(key, (0, {"runner": runner, "shard": "framework_tests", "subshard": subshard,
                                      "name": f"{runner}-framework_tests-{subshard}",
-                                     "source_target": "frameworkTestsRunner"}))
+                                     "source_target": "frameworkTestsRunner", "jdk": ""}))
     entries = [entry for _, entry in selected.values()]
     present = {entry["shard"] for entry in entries}
-    missing = SDK_SHARDS - present
+    missing = CORE_SDK_SHARDS - present
     if missing:
         raise ValueError(f"Requested revision has no supported CI entries for: {sorted(missing)}")
     groups: dict[tuple[str, str], set[str]] = {}
@@ -84,6 +95,31 @@ def ci_matrix(configuration: dict, test_source: str) -> dict:
             if len(totals) != 1 or {int(match[1]) for match in numeric} != set(range(1, next(iter(totals)) + 1)):
                 raise ValueError(f"Incomplete or conflicting CI partition {group}: {values}")
     return {"include": sorted(entries, key=lambda entry: entry["name"])}
+
+
+def plan_diagnostics(matrix: dict) -> list[str]:
+    entries = matrix["include"]
+    present = {entry["shard"] for entry in entries}
+    diagnostics = []
+    for shard in sorted(OPTIONAL_SDK_SHARDS - present):
+        message = f"{shard}: not configured by the requested Flutter ref; no job scheduled."
+        if shard == "tool_tests_commands" and any(entry["shard"] == "tool_tests" and entry["subshard"] == "commands" for entry in entries):
+            message += " Command tests are covered by this ref's legacy tool_tests/commands entry."
+        if shard == "android_java17_tool_integration_tests" and "android_java11_tool_integration_tests" in present:
+            message += " This ref configures android_java11_tool_integration_tests instead."
+        diagnostics.append(message)
+    return diagnostics
+
+
+def report_plan(matrix: dict) -> None:
+    diagnostics = plan_diagnostics(matrix)
+    for message in diagnostics:
+        print(f"::notice::{message}", file=sys.stderr)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a") as output:
+            output.write(f"\nSDK plan: {len(matrix['include'])} partitions from the requested ref.\n")
+            for message in diagnostics:
+                output.write(f"\n- {message}\n")
 
 
 def read_configuration(path: Path) -> dict:
@@ -111,6 +147,17 @@ def strict_goldens(source: str) -> str:
          "        log('Strict golden compared: $golden');\n"
          "      }\n      return true;"),
     ]
+    legacy_missing = (
+        "      update(golden, imageBytes);\n      return true;\n    }\n\n    ComparisonResult result;",
+        "      if (platform.environment['FLUTTER_STRICT_GOLDENS'] == 'true') {\n"
+        "        await update(golden, imageBytes);\n"
+        "        throw FlutterError('Strict golden comparison has no baseline: $golden');\n"
+        "      }\n      update(golden, imageBytes);\n      return true;\n    }\n\n    ComparisonResult result;",
+    )
+    missing_variants = [patches[1], legacy_missing]
+    if sum(source.count(old) for old, _ in missing_variants) != 1:
+        raise ValueError("Golden comparator differs from the supported contract; refusing a partial strict patch")
+    patches[1] = next(patch for patch in missing_variants if source.count(patch[0]) == 1)
     for exception in ("io.OSError", "io.SocketException", "FormatException"):
         old = f"    }} on {exception} catch (_) {{\n      return FlutterSkippingFileComparator("
         new = f"    }} on {exception} catch (_) {{\n" + (
@@ -319,6 +366,7 @@ def main() -> int:
     if args.command == "plan":
         configuration = read_configuration(args.flutter_root / ".ci.yaml")
         matrix = ci_matrix(configuration, (args.flutter_root / "dev/bots/suite_runners/run_framework_tests.dart").read_text())
+        report_plan(matrix)
         print("matrix=" + json.dumps(matrix, separators=(",", ":")))
         return 0
     name = f"sdk-{args.shard}-{args.subshard or 'all'}" if args.command == "sdk" else f"engine-host-{args.mode}"

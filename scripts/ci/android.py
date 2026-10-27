@@ -25,6 +25,7 @@ BUILD_TASKS = (
     "plugin_test_android_variants", "plugin_test_android_standard",
     "android_release_builds_exclude_dev_dependencies_test",
     "android_java11_dependency_smoke_tests", "android_java17_dependency_smoke_tests",
+    "plugin_test",  # Before the Android standard / variants tasks were split.
 )
 
 # All non-golden DeviceLab tasks assigned to a Linux_android_emu platform in
@@ -79,28 +80,65 @@ def local_gn(arguments):
     return result
 
 
+def android_ndk(root):
+    candidates = (
+        "packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt",
+        "packages/flutter_tools/gradle/src/main/groovy/flutter.groovy",
+        "packages/flutter_tools/gradle/flutter.gradle",
+    )
+    for relative in candidates:
+        source = root / relative
+        if source.is_file():
+            match = re.search(r'\bndkVersion\b(?:\s*:\s*String)?\s*=\s*[\'"]([0-9.]+)[\'"]',
+                              source.read_text())
+            if match:
+                return match[1], relative
+    raise ValueError("Cannot determine the target ref's Android NDK version from its Flutter extension")
+
+
 def source_plan(root):
     import yaml
 
     ci = yaml.safe_load((root / ".ci.yaml").read_text())
     platforms = ci["platform_properties"]
     targets = ci["targets"]
-    extension = (root / "packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt").read_text()
-    ndk = re.search(r'val ndkVersion: String = "([0-9.]+)"', extension)
-    if ndk is None:
-        raise ValueError("Cannot determine the target ref's Android NDK version")
+    ndk, ndk_source = android_ndk(root)
     supported = {t["properties"]["task_name"]: t for t in targets
                  if t.get("properties", {}).get("task_name")}
     builds = []
+    unavailable = []
+
+    def task_source(task):
+        if not (root / f"dev/devicelab/bin/tasks/{task}.dart").is_file():
+            raise ValueError(f"Configured Android CI task has no source file: {task}")
+
+    def jdk(target, platform):
+        version = (dependency(target.get("properties", {}), "open_jdk")
+                   or dependency(platforms.get(platform, {}).get("properties", {}), "open_jdk"))
+        if not version or not version.startswith("version:"):
+            raise ValueError(f"No supported JDK dependency for {target['name']}")
+        return version.removeprefix("version:")
+
     for task in BUILD_TASKS:
         target = next((t for t in targets if t["name"].startswith("Linux ")
                        and t.get("properties", {}).get("task_name") == task), None)
         if target is None:
-            raise ValueError(f"Required host build task is absent in target ref: {task}")
-        version = dependency(target["properties"], "open_jdk")
-        if not version or not version.startswith("version:"):
-            raise ValueError(f"No supported JDK dependency for {target['name']}")
-        builds.append({"task": task, "jdk": version.removeprefix("version:")})
+            unavailable.append({"task": task, "suite": "build",
+                                "reason": "not configured by this ref's CI"})
+            continue
+        task_source(task)
+        builds.append({"task": task, "jdk": jdk(target, "linux")})
+    # Detect newly configured Android host checks rather than quietly omitting
+    # them. Benchmarks are owned by dedicated performance infrastructure.
+    excluded_host = {"analyzer_benchmark", "technical_debt__cost"}
+    for target in targets:
+        task = target.get("properties", {}).get("task_name")
+        if (target["name"].startswith("Linux ") and task and task not in BUILD_TASKS
+                and target.get("recipe") == "devicelab/devicelab_drone"
+                and dependency(target["properties"], "android_sdk")):
+            if task in excluded_host or task.startswith("web_benchmarks_"):
+                continue
+            raise ValueError(f"New Android host task needs an explicit coverage decision: {task}")
     emulator = []
     for target in targets:
         platform = target["name"].split(" ", 1)[0].lower()
@@ -111,21 +149,60 @@ def source_plan(root):
             continue
         if task not in EMULATOR_MODES:
             raise ValueError(f"New Android emulator task needs an explicit mode/coverage decision: {task}")
+        task_source(task)
         avd_version = (dependency(target.get("properties", {}), "android_virtual_device")
                        or dependency(platforms[platform]["properties"], "android_virtual_device"))
         avd = avd_configuration(avd_version)
         emulator.append({"task": task, "id": f"{task}-{platform}",
-                         "modes": ",".join(EMULATOR_MODES[task]), "ndk": ndk[1], **avd})
+                         "modes": ",".join(EMULATOR_MODES[task]), "ndk": ndk,
+                         "jdk": jdk(target, platform), **avd})
+    configured_emulator = {item["task"] for item in emulator}
+    unavailable.extend({"task": task, "suite": "emulator",
+                        "reason": "not configured on an Android emulator by this ref's CI"}
+                       for task in EMULATOR_MODES if task not in configured_emulator)
     default_avd = avd_configuration(dependency(platforms["linux_android_emu"]["properties"],
                                                "android_virtual_device"))
     for task in ADAPTED_TASKS:
-        if task not in supported or not (root / f"dev/devicelab/bin/tasks/{task}.dart").is_file():
-            raise ValueError(f"Required functional task is absent in target ref: {task}")
+        if task not in supported:
+            unavailable.append({"task": task, "suite": "adapted-emulator",
+                                "reason": "not configured by this ref's CI"})
+            continue
+        if not (root / f"dev/devicelab/bin/tasks/{task}.dart").is_file():
+            unavailable.append({"task": task, "suite": "adapted-emulator",
+                                "reason": "CI entry exists, but this ref has no task source file"})
+            continue
+        task_source(task)
         mode = ("release" if task == "run_release_test" else
                 "debug,release" if task == "flavors_test" else "debug")
         emulator.append({"task": task, "id": f"{task}-adapted", "modes": mode,
-                         "ndk": ndk[1], **default_avd})
-    return {"build": {"include": builds}, "emulator": {"include": emulator}}
+                         "ndk": ndk, "jdk": jdk({"name": task}, "linux_android_emu"), **default_avd})
+    if not builds or not emulator:
+        raise ValueError("Selected ref has an empty Android build or emulator test collection")
+    core = {"build_aar_module_test", "android_views"}
+    missing_core = core - ({item["task"] for item in builds} | configured_emulator)
+    if missing_core:
+        raise ValueError("Required core Android CI tasks are absent: " + ", ".join(sorted(missing_core)))
+    return {"build": {"include": builds}, "emulator": {"include": emulator},
+            "coverage": {"unavailable": unavailable, "ndk": ndk, "ndk_source": ndk_source,
+                         "selected_builds": builds, "selected_emulator": emulator}}
+
+
+def write_plan_coverage(root, plan):
+    outputs = Path(os.environ.get("FLUTTER_TEST_OUTPUTS_DIR", "test-results"))
+    outputs.mkdir(parents=True, exist_ok=True)
+    report = {"resolved_sha": os.environ.get("FLUTTER_RESOLVED_SHA"), **plan["coverage"]}
+    (outputs / "android-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
+    lines = ["### Android coverage for the selected Flutter ref", "",
+             f"Selected: {len(plan['build']['include'])} build checks and "
+             f"{len(plan['emulator']['include'])} emulator configurations.", "",
+             "The following reviewed features are unavailable in this ref's CI:", ""]
+    lines += [f"- `{item['task']}` ({item['suite']}): {item['reason']}"
+              for item in report["unavailable"]]
+    text = "\n".join(lines) + "\n"
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+            summary.write(text)
+    print(text, file=sys.stderr)
 
 
 class Android:
@@ -170,11 +247,18 @@ class Android:
         filename = "linux_android_debug_engine.json" if mode == "debug" else "linux_android_aot_engine.json"
         self.build(filename, f"ci/android_{mode}_x64")
         # Use the official mode's GN setup; build local tooling, not the host UT suite.
-        self.build("linux_host_engine_test.json", f"ci/host_{mode}_test",
-                   ["flutter/build/dart:dart_sdk", "flutter/flutter_frontend_server:frontend_server",
-                    "flutter/shell/testing", "flutter/tools/font_subset",
-                    "flutter/impeller/compiler:impellerc",
-                    "flutter/impeller/tessellator:tessellator_shared", "sky_engine"])
+        host_config = self.config("linux_host_engine_test.json", f"ci/host_{mode}_test")
+        sdk_targets = [t for t in host_config["ninja"]["targets"]
+                       if t in ("flutter/build/dart:dart_sdk", "flutter/build/dart:copy_dart_sdk")]
+        if not sdk_targets:
+            raise ValueError("The selected ref's host builder has no reviewed Dart SDK target")
+        host_targets = [*sdk_targets, "flutter/flutter_frontend_server:frontend_server",
+                        "flutter/shell/testing", "flutter/tools/font_subset",
+                        "flutter/impeller/compiler:impellerc",
+                        "flutter/impeller/tessellator:tessellator_shared", "sky_engine"]
+        if (self.src / "flutter/tools/const_finder/BUILD.gn").is_file():
+            host_targets.append("flutter/tools/const_finder")
+        self.build("linux_host_engine_test.json", f"ci/host_{mode}_test", host_targets)
         if not self.dry_run:
             sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
             for name in (f"ci/android_{mode}_x64", f"ci/host_{mode}_test"):
@@ -294,6 +378,8 @@ class Android:
                         host / "dart-sdk/bin/snapshots/frontend_server_aot.dart.snapshot",
                         host / "gen/dart-pkg/sky_engine/lib/ui/ui.dart",
                         host / "font-subset", host / "impellerc", host / "libtessellator.so"]
+            if (self.src / "flutter/tools/const_finder/BUILD.gn").is_file():
+                required.append(host / "gen/const_finder.dart.snapshot")
             for artifact in (f"flutter_embedding_{mode}", f"x86_64_{mode}"):
                 required += [target / f"{artifact}.{ext}" for ext in ("jar", "pom", "maven-metadata.xml")]
             missing = [str(p) for p in required if not p.is_file()]
@@ -365,7 +451,10 @@ def main():
     args = parser.parse_args()
     runner = Android(args.flutter_root, args.dry_run)
     if args.command == "plan":
-        for key, value in source_plan(runner.root).items():
+        plan = source_plan(runner.root)
+        write_plan_coverage(runner.root, plan)
+        for key in ("build", "emulator"):
+            value = plan[key]
             line = f"{key}={json.dumps(value, separators=(',', ':'))}\n"
             if "GITHUB_OUTPUT" in os.environ:
                 with open(os.environ["GITHUB_OUTPUT"], "a") as output:

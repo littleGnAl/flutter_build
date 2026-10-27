@@ -85,12 +85,12 @@ jobs:
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
           flutter_sha: ${{ needs.resolve.outputs.sha }}
-      - name: Use Java 17 for the official compatibility shard
-        if: matrix.shard == 'android_java17_tool_integration_tests'
+      - name: Use the JDK declared by this Flutter CI target
+        if: matrix.jdk != ''
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ matrix.jdk }}
       - name: Install the public CIPD client for the archived Android preview SDK
         if: matrix.shard == 'android_preview_tool_integration_tests'
         run: |

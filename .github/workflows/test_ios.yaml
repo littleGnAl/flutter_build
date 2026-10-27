@@ -41,6 +41,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@v4
       - id: resolve
@@ -55,6 +56,21 @@ jobs:
           else
             python3 scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO" --ref "$FLUTTER_REF"
           fi
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.flutter_repo }}
+          ref: ${{ steps.resolve.outputs.sha }}
+          path: flutter
+          persist-credentials: false
+      - name: Plan tasks available in the selected Flutter revision
+        id: plan
+        run: python3 scripts/ci/ios.py plan --flutter-root flutter --results test-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-task-plan-${{ steps.resolve.outputs.sha }}
+          path: test-results/
+          retention-days: 14
 
   native:
     name: Native embedding and scenario (${{ matrix.variant }})
@@ -139,12 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix:
-        task:
-          - module_test_ios
-          - build_ios_framework_module_test
-          - plugin_test_ios
-          - plugin_test_darwin
+      matrix: ${{ fromJSON(needs.resolve.outputs.baseline) }}
     env:
       FLUTTER_ROOT: ${{ github.workspace }}/flutter
       FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results

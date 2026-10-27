@@ -4,25 +4,43 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
-def git(root, *arguments, input=None):
+def git(root, *arguments, input=None, env=None):
     return subprocess.check_output(
-        ["git", "-C", str(root), *arguments], text=True, input=input,
+        ["git", "-C", str(root), *arguments], text=True, input=input, env=env,
     ).strip()
 
 
 def baseline_engine(root, baseline):
-    tracked = git(root, "ls-tree", "--name-only", baseline, "--", "bin/internal/engine.version")
+    # Release forks retain the published Engine/Dart pin of their release.
+    # Overriding it with an ancestor's hash can select nonexistent artifacts.
+    tracked = git(root, "ls-tree", "--name-only", "HEAD", "--", "bin/internal/engine.version")
     if tracked:
-        return git(root, "show", f"{baseline}:bin/internal/engine.version")
-    tree = git(root, "ls-tree", baseline, "--", "DEPS", "engine",
-               "bin/internal/release-candidate-branch.version")
-    if not tree or not any(line.endswith("\tengine") for line in tree.splitlines()):
+        return git(root, "show", "HEAD:bin/internal/engine.version")
+    if not git(root, "ls-tree", "--name-only", baseline, "--", "engine"):
         raise ValueError("This revision is not a supported Flutter/Engine monorepo")
-    # Same manifest and trailing newline as bin/internal/content_aware_hash.sh.
-    return git(root, "hash-object", "--stdin", input=tree + "\n")
+    # Historical releases used commit SHAs; newer versions use content hashes
+    # whose format has also changed. Let the official revision select its own
+    # version in an isolated clone, without touching the tested checkout/cache.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_") and key not in {
+               "FLUTTER_PREBUILT_ENGINE_VERSION", "FLUTTER_REALM", "LUCI_CONTEXT"}}
+    with tempfile.TemporaryDirectory(prefix="flutter-bootstrap-") as directory:
+        checkout = Path(directory) / "baseline"
+        subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout",
+                        str(root), str(checkout)], check=True, env=env)
+        git(checkout, "update-ref", "--no-deref", "HEAD", baseline, env=env)
+        git(checkout, "checkout", baseline, "--", "bin/internal", env=env)
+        git(checkout, "remote", "add", "upstream", "https://github.com/flutter/flutter.git", env=env)
+        git(checkout, "update-ref", "refs/remotes/upstream/master", baseline, env=env)
+        updater = checkout / "bin/internal/update_engine_version.sh"
+        if not updater.is_file():
+            raise ValueError("The official baseline has no supported Engine version selector")
+        subprocess.run(["bash", str(updater)], cwd=checkout, env=env, check=True)
+        return (checkout / "bin/cache/engine.stamp").read_text().strip()
 
 
 def emit(values):
@@ -58,7 +76,10 @@ def main():
     metadata = {
         "source_sha": source_sha, "upstream_baseline_sha": baseline,
         "bootstrap_engine_version": engine,
-        "sdk_policy": "target Framework/Tools source with official baseline Engine",
+        "bootstrap_engine_selector": ("target-engine.version" if git(
+            root, "ls-tree", "--name-only", "HEAD", "--", "bin/internal/engine.version")
+            else "official-baseline-update_engine_version.sh"),
+        "sdk_policy": "target Framework/Tools source with official prebuilt Engine",
         "native_policy": "native suites build and select target-revision Engine outputs",
     }
     (results / "revision.json").write_text(json.dumps(metadata, indent=2) + "\n")

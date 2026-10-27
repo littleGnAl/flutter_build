@@ -51,7 +51,16 @@ jobs:
           path: flutter
           persist-credentials: false
       - id: plan
+        env:
+          FLUTTER_RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
         run: python scripts/ci/android.py --flutter-root flutter plan
+      - name: Record selected-ref Android coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-coverage-plan
+          path: test-results/android-coverage.json
+          retention-days: 14
 
   embedding:
     needs: resolve
@@ -164,6 +173,12 @@ jobs:
           flutter_repo: ${{ inputs.flutter_repo }}
           flutter_sha: ${{ needs.resolve.outputs.sha }}
           engine: 'false'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - name: Select the task's JDK after shared bootstrap
+        run: flutter config --jdk-dir "$JAVA_HOME"
       - uses: actions/download-artifact@v4
         with:
           pattern: android-app-engine-*

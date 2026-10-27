@@ -50,6 +50,24 @@ class BootstrapManifestTest(unittest.TestCase):
         (self.root / "engine").mkdir()
         (self.root / "engine/source.cc").write_text("engine one")
         (self.root / "DEPS").write_text("dependencies")
+        internal = self.root / "bin/internal"
+        internal.mkdir(parents=True)
+        (internal / "update_engine_version.sh").write_text('''#!/usr/bin/env bash
+set -e
+root="$(dirname "$(dirname "$(dirname "$0")")")"
+mkdir -p "$root/bin/cache"
+if [ -n "$FLUTTER_PREBUILT_ENGINE_VERSION" ]; then
+  version="$FLUTTER_PREBUILT_ENGINE_VERSION"
+else
+  version="$(bash "$root/bin/internal/content_aware_hash.sh")"
+fi
+printf '%s\\n' "$version" > "$root/bin/cache/engine.stamp"
+''')
+        (internal / "content_aware_hash.sh").write_text('''#!/usr/bin/env bash
+set -eo pipefail
+root="$(dirname "$(dirname "$(dirname "$0")")")"
+git -C "$root" ls-tree HEAD -- DEPS engine bin/internal/release-candidate-branch.version | git -C "$root" hash-object --stdin
+''')
         self.commit("baseline")
 
     def tearDown(self):
@@ -73,10 +91,53 @@ class BootstrapManifestTest(unittest.TestCase):
 
     def test_release_engine_version_takes_priority_over_content_hash(self):
         path = self.root / "bin/internal/engine.version"
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("b" * 40 + "\n")
         revision = self.commit("release")
         self.assertEqual(prepare.baseline_engine(self.root, revision), "b" * 40)
+
+    def test_release_fork_keeps_its_published_engine_instead_of_hashing_merge_base(self):
+        baseline = self.git("rev-parse", "HEAD")
+        published_engine = "035316565ad77281a75305515e4682e6c4c6f7ca"
+        pin = self.root / "bin/internal/engine.version"
+        pin.parent.mkdir(parents=True, exist_ok=True)
+        pin.write_text(published_engine + "\n")
+        (self.root / "engine/source.cc").write_text("unpublished release-fork fix")
+        self.commit("Flutter 3.35.7 fork with the official release Engine pin")
+
+        self.assertEqual(prepare.baseline_engine(self.root, baseline), published_engine)
+
+    def test_legacy_updater_selects_commit_even_when_content_hash_helper_exists(self):
+        updater = self.root / "bin/internal/update_engine_version.sh"
+        updater.write_text('''#!/usr/bin/env bash
+set -e
+root="$(dirname "$(dirname "$(dirname "$0")")")"
+mkdir -p "$root/bin/cache"
+git -C "$root" merge-base HEAD upstream/master > "$root/bin/cache/engine.stamp"
+''')
+        baseline = self.commit("Legacy updater uses the upstream commit as artifact version")
+        self.assertEqual(prepare.baseline_engine(self.root, baseline), baseline)
+
+    def test_version_policy_is_read_from_baseline_without_mutating_the_checkout(self):
+        helper = self.root / "bin/internal/content_aware_hash.sh"
+        helper.write_text(helper.read_text().replace("ls-tree HEAD --", 'ls-tree --format="%(objectname) %(path)" HEAD --'))
+        baseline = self.commit("Historical content hash format")
+        expected = subprocess.check_output(["bash", str(helper)], text=True).strip()
+        helper.write_text("exit 99\n")
+        self.commit("Fork must not supply the official baseline version policy")
+        cache = self.root / "bin/cache/engine.stamp"
+        cache.parent.mkdir()
+        cache.write_text("existing target stamp\n")
+        untracked_pin = self.root / "bin/internal/engine.version"
+        untracked_pin.write_text("untracked-pin-must-not-be-used\n")
+        head = self.git("rev-parse", "HEAD")
+        status = self.git("status", "--porcelain")
+        with patch.dict(os.environ, {"FLUTTER_PREBUILT_ENGINE_VERSION": "f" * 40,
+                                     "FLUTTER_REALM": "unpublished-realm"}):
+            self.assertEqual(prepare.baseline_engine(self.root, baseline), expected)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("status", "--porcelain"), status)
+        self.assertEqual(cache.read_text(), "existing target stamp\n")
 
 
 class GoldenComparisonTest(unittest.TestCase):
@@ -145,6 +206,11 @@ class GoldenComparisonTest(unittest.TestCase):
 
 
 class GoldenPlanTest(unittest.TestCase):
+    def write_runner(self, root, suites):
+        runner = root / "dev/bots/test.dart"
+        runner.parent.mkdir(parents=True, exist_ok=True)
+        runner.write_text("\n".join("'" + suite + "': runTests," for suite in suites))
+
     def test_target_tool_dependencies_do_not_erase_inherited_avd(self):
         import yaml
         with tempfile.TemporaryDirectory() as directory:
@@ -152,15 +218,38 @@ class GoldenPlanTest(unittest.TestCase):
             ci = {
                 "platform_properties": {"linux_android_emu": {"properties": {
                     "dependencies": json.dumps([{"dependency": "android_virtual_device",
-                                                "version": "android_36_google_apis_x64.textpb"}])}}},
+                                                "version": "android_36_google_apis_x64.textpb"},
+                                               {"dependency": "open_jdk", "version": "version:21"}])}}},
                 "targets": [{"name": "Linux_android_emu " + suite, "properties": {
-                    "shard": suite, "dependencies": json.dumps([{"dependency": "open_jdk", "version": "25"}])}}
+                    "shard": suite, "dependencies": json.dumps([{"dependency": "open_jdk", "version": "version:25"}])}}
                     for suite in golden.SUITES],
             }
             (root / ".ci.yaml").write_text(yaml.safe_dump(ci))
+            self.write_runner(root, golden.SUITES)
             matrix = golden.source_matrix(root)["include"]
             self.assertEqual(len(matrix), 7)
             self.assertTrue(all(entry["api"] == "36" for entry in matrix))
+            self.assertTrue(all(entry["jdk"] == "25" for entry in matrix))
+
+    def test_release_plan_runs_existing_goldens_without_requiring_future_suites(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = golden.SUITES[:2]
+            ci = {
+                "platform_properties": {"linux_android_emu": {"properties": {
+                    "dependencies": json.dumps([{"dependency": "android_virtual_device",
+                                                "version": "android_35_google_apis_x64.textpb"},
+                                               {"dependency": "open_jdk", "version": "version:21"}])}}},
+                "targets": [{"name": "Linux_android_emu " + suite, "properties": {"shard": suite}}
+                            for suite in existing],
+            }
+            (root / ".ci.yaml").write_text(yaml.safe_dump(ci))
+            self.write_runner(root, existing)
+            self.assertEqual([entry["suite"] for entry in golden.source_matrix(root)["include"]], list(existing))
+            self.write_runner(root, [*existing, golden.SUITES[2]])
+            with self.assertRaisesRegex(ValueError, "official emulator target"):
+                golden.source_matrix(root)
 
     def test_instrumentation_uses_flat_source_engine_paths(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,9 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -19,6 +22,52 @@ def fixture_build(extension=False):
                "--target-dir", variant] + (["--darwin-extension-safe"] if extension else []),
         "ninja": {"config": variant, "targets": ["flutter/testing/ios_scenario_app", "ios_test_flutter"]},
     }
+
+
+def fixture_native_runners(root, *, legacy_embedding=False, legacy_shell=False):
+    src = root / "engine/src"
+    testing = src / "flutter/testing"
+    scenario = testing / "ios_scenario_app"
+    (scenario / "bin").mkdir(parents=True)
+    # Legacy contracts copied from littleGnAl/flutter@225e8f4e687e34a0f5c21c3f56d90e934b5ced76.
+    embedding = """def run_objc_tests(ios_variant='ios_debug_sim_unopt', test_filter=None):
+  new_simulator_name = 'IosUnitTestsSimulator'
+  create_simulator = [
+      'xcrun '
+      'simctl '
+      'create '
+      '%s com.apple.CoreSimulator.SimDeviceType.iPhone-11' % new_simulator_name
+  ]
+  run_cmd(create_simulator, shell=True)
+""" if legacy_embedding else "parser.add_argument('--ios-runtime')\n"
+    if legacy_shell:
+        shell = (" " + chr(92) + "\n").join([
+            '\"$DART\"',
+            '  --disable-dart-dev',
+            '  testing/ios_scenario_app/bin/run_ios_tests.dart',
+            '  \"$@\"',
+        ]) + "\n"
+    else:
+        shell = '\"$DART\" \"$SCRIPT_DIR/bin/run_ios_tests.dart\" \"$@\"\n'
+    dart = "if (args.length > 1 || args.contains('-h')) {}\naddOption('os-runtime'); addOption('os-version');\n"
+    (testing / "run_tests.py").write_text(embedding)
+    (scenario / "run_ios_tests.sh").write_text(shell)
+    (scenario / "bin/run_ios_tests.dart").write_text(dart)
+    return embedding, shell, dart
+
+
+def fixture_335_tasks(root):
+    directory = root / "dev/devicelab/bin/tasks"
+    directory.mkdir(parents=True)
+    missing = {"ios_universal_link_test", "uiscene_plugin_lifecycle_test_ios", "hello_world_impeller_ios_sdfs"}
+    simulator = ["native_assets_ios_simulator", "hot_mode_dev_cycle_ios_simulator"]
+    tasks = [task for task in ios.SIMULATOR_TASKS if task not in missing]
+    baseline = ["module_test_ios", "build_ios_framework_module_test", "plugin_test_ios"]
+    (root / ".ci.yaml").write_text("\n".join("      task_name: " + task for task in [*tasks, *baseline]))
+    for task in [*tasks, *baseline]:
+        source = "testWithNewIOSSimulator('sim', callback);" if task in simulator else "await task(physicalDeviceTask());"
+        (directory / (task + ".dart")).write_text(source)
+    return simulator, baseline
 
 
 class IOSCITests(unittest.TestCase):
@@ -83,10 +132,8 @@ class IOSCITests(unittest.TestCase):
             root = Path(temporary)
             results = root / "results"
             results.mkdir()
+            _, _, original = fixture_native_runners(root)
             runner = root / "engine/src/flutter/testing/ios_scenario_app/bin/run_ios_tests.dart"
-            runner.parent.mkdir(parents=True)
-            original = "if (args.length > 1 || args.contains('-h')) {}\naddOption('os-runtime'); addOption('os-version');\n"
-            runner.write_text(original)
             runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-2",
                        "isAvailable": True, "version": "26.2"}
             with mock.patch.object(ios, "find_build", return_value=fixture_build()), \
@@ -95,18 +142,131 @@ class IOSCITests(unittest.TestCase):
                     mock.patch.object(ios, "run", side_effect=[7, 0]) as run:
                 self.assertEqual(ios.run_native(root, results, 2, False), 1)
             self.assertEqual(run.call_count, 2)
+            self.assertIn("--ios-runtime", run.call_args_list[0].args[0])
             self.assertIn("--os-runtime=" + runtime["identifier"], run.call_args_list[1].args[0])
+            self.assertEqual(run.call_args_list[1].kwargs["cwd"], root / "engine/src")
+            self.assertFalse((results / "embedding-runner.patch").exists())
             self.assertEqual(runner.read_text(), original)
             self.assertTrue((results / "scenario-runner.patch").is_file())
             self.assertEqual(json.loads((results / "results.json").read_text()),
                              {"embedding": 7, "scenario": 0})
 
+    def test_legacy_embedding_selects_runtime_without_unsupported_cli_flag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results = root / "results"
+            results.mkdir()
+            original, _, _ = fixture_native_runners(root, legacy_embedding=True)
+            runner = root / "engine/src/flutter/testing/run_tests.py"
+            runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-2",
+                       "isAvailable": True, "version": "26.2"}
+
+            def execute(command, **kwargs):
+                if "flutter/testing/run_tests.py" in command:
+                    self.assertNotIn("--ios-runtime", command)
+                    patched = runner.read_text()
+                    self.assertIn("iPhone-11 " + runtime["identifier"], patched)
+                    compile(patched, str(runner), "exec")
+                    return 7
+                return 0
+
+            with mock.patch.object(ios, "find_build", return_value=fixture_build()), \
+                    mock.patch.object(ios, "build_engine", return_value="ci/ios_debug_unopt_sim_arm64"), \
+                    mock.patch.object(ios.subprocess, "check_output", return_value=json.dumps({"runtimes": [runtime]})), \
+                    mock.patch.object(ios, "run", side_effect=execute):
+                self.assertEqual(ios.run_native(root, results, 2, False), 1)
+            self.assertEqual(runner.read_text(), original)
+            self.assertTrue((results / "embedding-runner.patch").is_file())
+
+    def test_legacy_scenario_shell_runs_from_flutter_source_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results = root / "results"
+            results.mkdir()
+            _, original_shell, original_dart = fixture_native_runners(root, legacy_shell=True)
+            src = root / "engine/src"
+            runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-2",
+                       "isAvailable": True, "version": "18.2"}
+
+            def execute(command, **kwargs):
+                if command[0].endswith("run_ios_tests.sh"):
+                    self.assertEqual(kwargs["cwd"], src / "flutter")
+                    self.assertTrue((kwargs["cwd"] / "testing/ios_scenario_app/bin/run_ios_tests.dart").is_file())
+                    self.assertTrue(Path(command[0]).is_file())
+                return 0
+
+            with mock.patch.object(ios, "find_build", return_value=fixture_build()), \
+                    mock.patch.object(ios, "build_engine", return_value="ci/ios_debug_unopt_sim_arm64"), \
+                    mock.patch.object(ios.subprocess, "check_output", return_value=json.dumps({"runtimes": [runtime]})), \
+                    mock.patch.object(ios, "run", side_effect=execute):
+                self.assertEqual(ios.run_native(root, results, 2, False), 0)
+            self.assertEqual((src / "flutter/testing/ios_scenario_app/run_ios_tests.sh").read_text(), original_shell)
+            self.assertEqual((src / "flutter/testing/ios_scenario_app/bin/run_ios_tests.dart").read_text(), original_dart)
+
+    def test_unknown_legacy_simulator_contract_fails_before_patching(self):
+        with self.assertRaisesRegex(ValueError, "unsupported simulator creation"):
+            ios.embedding_runtime_options("def run_objc_tests(): pass\n",
+                                          "com.apple.CoreSimulator.SimRuntime.iOS-18-2")
+        with self.assertRaisesRegex(ValueError, "Invalid iOS simulator runtime"):
+            ios.embedding_runtime_options("legacy runner", "runtime; arbitrary shell command")
+
     def test_missing_required_task_does_not_silently_reduce_coverage(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / ".ci.yaml").write_text("targets: []\n")
-            with self.assertRaisesRegex(ValueError, "absent"):
+            with self.assertRaisesRegex(ValueError, "Required core simulator task"):
                 ios.simulator_tasks(root)
+
+    def test_old_ref_runs_existing_simulator_tasks_and_reports_unavailable_features(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            simulator, _ = fixture_335_tasks(root)
+            self.assertEqual(ios.simulator_tasks(root), simulator)
+            unavailable = []
+            self.assertEqual(ios.simulator_tasks(root, unavailable=unavailable), simulator)
+            reasons = {item["task"]: item["reason"] for item in unavailable}
+            self.assertEqual(reasons["uiscene_plugin_lifecycle_test_ios"], "task_file_absent")
+            self.assertEqual(reasons["channels_integration_test_ios"], "requires_physical_device_in_this_ref")
+
+    def test_old_ref_plan_emits_existing_baseline_matrix_and_coverage_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            simulator, baseline = fixture_335_tasks(root)
+            results, output, summary = root / "results", root / "outputs", root / "summary"
+            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+            result = subprocess.run([
+                sys.executable, str(Path(ios.__file__)), "plan", "--flutter-root", str(root),
+                "--results", str(results),
+            ], env=environment, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            self.assertEqual(json.loads(values["baseline"]), {"task": baseline})
+            coverage = json.loads((results / "ios-plan.json").read_text())
+            self.assertEqual(coverage["simulator_tasks"], simulator)
+            self.assertIn({"task": "plugin_test_darwin", "reason": "task_file_absent"}, coverage["unavailable"])
+            self.assertIn("plugin_test_darwin", summary.read_text())
+            self.assertIn("unavailable", summary.read_text())
+
+    def test_missing_core_task_still_fails_when_other_simulator_tasks_exist(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_335_tasks(root)
+            (root / "dev/devicelab/bin/tasks/native_assets_ios_simulator.dart").unlink()
+            with self.assertRaisesRegex(ValueError, "Required core simulator task.*native_assets_ios_simulator"):
+                ios.simulator_tasks(root)
+
+    def test_absent_ci_declaration_is_reported_and_empty_baseline_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_335_tasks(root)
+            ci = root / ".ci.yaml"
+            ci.write_text(ci.read_text().replace("      task_name: channels_integration_test_ios", ""))
+            unavailable = []
+            ios.simulator_tasks(root, unavailable=unavailable)
+            self.assertIn({"task": "channels_integration_test_ios", "reason": "not_configured_in_ci"}, unavailable)
+            ci.write_text("targets: []\n")
+            with self.assertRaisesRegex(ValueError, "No configured baseline"):
+                ios.baseline_tasks(root)
 
     def test_devicelab_uses_local_host_and_target_and_continues_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -164,6 +324,9 @@ class IOSCITests(unittest.TestCase):
             results = root / "results"
             results.mkdir()
             (root / ".ci.yaml").write_text("      task_name: module_test_ios\n")
+            source = root / "dev/devicelab/bin/tasks/module_test_ios.dart"
+            source.parent.mkdir(parents=True)
+            source.write_text("await task(moduleTest);\n")
             with mock.patch.object(ios, "build_engine") as build, \
                     mock.patch.object(ios, "run", return_value=0) as run:
                 self.assertEqual(ios.run_devicelab(root, results, 2, "module_test_ios"), 0)
