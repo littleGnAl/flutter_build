@@ -90,10 +90,11 @@ jobs:
       - name: Enable KVM
         if: matrix.suite == 'native'
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -r /dev/kvm && test -w /dev/kvm
+          set -euxo pipefail
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
       - name: Run native tests on the upstream AVD configuration
         if: matrix.suite == 'native'
         uses: reactivecircus/android-emulator-runner@v2
@@ -104,7 +105,7 @@ jobs:
           cores: 2
           ram-size: 2048M
           disable-linux-hw-accel: false
-          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
+          emulator-options: -accel on -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
           script: python scripts/ci/android.py native
       - name: Collect Android diagnostics
         if: always()
@@ -192,10 +193,11 @@ jobs:
           python scripts/ci/android.py validate-app --modes debug,profile,release
       - name: Enable KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -r /dev/kvm && test -w /dev/kvm
+          set -euxo pipefail
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
       - name: Run functional task with matching source engines
         uses: reactivecircus/android-emulator-runner@v2
         env:
@@ -209,7 +211,7 @@ jobs:
           cores: 2
           ram-size: 2048M
           disable-linux-hw-accel: false
-          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
+          emulator-options: -accel on -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
           script: python scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
       - name: Collect diagnostics
         if: always()

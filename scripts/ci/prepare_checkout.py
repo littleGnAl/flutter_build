@@ -65,9 +65,12 @@ def main():
         git(root, "remote", "set-url", "upstream", "https://github.com/flutter/flutter.git")
     else:
         git(root, "remote", "add", "upstream", "https://github.com/flutter/flutter.git")
+    # Forks can omit release tags despite having the full commit history.
+    # Flutter derives its version from these tags, not the branch name.
     subprocess.run(
-        ["git", "-C", str(root), "fetch", "--no-tags", "upstream",
-         "+refs/heads/master:refs/remotes/upstream/master"], check=True,
+        ["git", "-C", str(root), "fetch", "upstream",
+         "+refs/heads/master:refs/remotes/upstream/master",
+         "+refs/tags/*:refs/tags/*"], check=True,
     )
     baseline = git(root, "merge-base", source_sha, "upstream/master")
     engine = baseline_engine(root, baseline)
@@ -75,6 +78,7 @@ def main():
         raise ValueError(f"Invalid official bootstrap Engine hash: {engine!r}")
     metadata = {
         "source_sha": source_sha, "upstream_baseline_sha": baseline,
+        "source_git_describe": git(root, "describe", "--match", "*.*.*", "--long", "--tags", source_sha),
         "bootstrap_engine_version": engine,
         "bootstrap_engine_selector": ("target-engine.version" if git(
             root, "ls-tree", "--name-only", "HEAD", "--", "bin/internal/engine.version")

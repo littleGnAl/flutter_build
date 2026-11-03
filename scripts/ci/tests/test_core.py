@@ -140,6 +140,61 @@ git -C "$root" merge-base HEAD upstream/master > "$root/bin/cache/engine.stamp"
         self.assertEqual(cache.read_text(), "existing target stamp\n")
 
 
+class ReleaseMetadataTest(unittest.TestCase):
+    def test_fork_versions_follow_upstream_release_tags_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            upstream = Path(directory) / "upstream"
+            checkout = Path(directory) / "fork"
+
+            def git(root, *args):
+                return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+
+            upstream.mkdir()
+            git(upstream, "init", "--quiet")
+            git(upstream, "symbolic-ref", "HEAD", "refs/heads/master")
+            git(upstream, "config", "user.name", "CI test")
+            git(upstream, "config", "user.email", "ci@example.invalid")
+            pin = upstream / "bin/internal/engine.version"
+            pin.parent.mkdir(parents=True)
+            pin.write_text("b" * 40 + "\n")
+            git(upstream, "add", ".")
+            git(upstream, "commit", "--quiet", "-m", "Old fork tag")
+            git(upstream, "tag", "1.22.0-1.0.pre")
+            releases = {}
+            for version in ("3.35.7", "3.39.2"):
+                git(upstream, "commit", "--quiet", "--allow-empty", "-m", version)
+                git(upstream, "tag", version)
+                releases[version] = git(upstream, "rev-parse", "HEAD")
+            subprocess.run(["git", "clone", "--quiet", "--no-tags", str(upstream), str(checkout)], check=True)
+            git(checkout, "config", "user.name", "CI test")
+            git(checkout, "config", "user.email", "ci@example.invalid")
+            # A fork can contain all commits while retaining only stale tags.
+            git(checkout, "fetch", "--quiet", "origin", "tag", "1.22.0-1.0.pre")
+            env = dict(os.environ, GIT_CONFIG_COUNT="1",
+                       GIT_CONFIG_KEY_0=f"url.{upstream}.insteadOf",
+                       GIT_CONFIG_VALUE_0="https://github.com/flutter/flutter.git")
+            env.pop("GITHUB_ENV", None)
+            env.pop("GITHUB_OUTPUT", None)
+            for version, release in releases.items():
+                with self.subTest(version=version):
+                    git(checkout, "checkout", "--quiet", "--detach", release)
+                    git(checkout, "commit", "--quiet", "--allow-empty", "-m", "Custom branch fix")
+                    source = git(checkout, "rev-parse", "HEAD")
+                    results = Path(directory) / version
+                    subprocess.run([sys.executable, str(CI / "prepare_checkout.py"),
+                                    "--root", str(checkout), "--results", str(results)],
+                                   check=True, env=env, capture_output=True, text=True)
+                    # This is the command used by Flutter's GitTagVersion.determine.
+                    description = git(checkout, "describe", "--match", "*.*.*", "--long", "--tags", "HEAD")
+                    self.assertTrue(description.startswith(version + "-1-g"), description)
+                    self.assertEqual(git(checkout, "rev-parse", "HEAD"), source)
+                    metadata = json.loads((results / "revision.json").read_text())
+                    self.assertEqual(metadata["source_sha"], source)
+                    self.assertEqual(metadata["source_git_describe"], description)
+                    self.assertEqual(metadata["upstream_baseline_sha"], release)
+                    self.assertEqual(metadata["bootstrap_engine_version"], "b" * 40)
+
+
 class GoldenComparisonTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
