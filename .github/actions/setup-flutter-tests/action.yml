@@ -28,6 +28,13 @@ runs:
         path: flutter
         fetch-depth: 0
         persist-credentials: false
+    - name: Set the CI Git identity for temporary test repositories
+      shell: bash
+      run: |
+        echo "GIT_AUTHOR_NAME=Flutter CI" >> "$GITHUB_ENV"
+        echo "GIT_AUTHOR_EMAIL=flutter-ci@users.noreply.github.com" >> "$GITHUB_ENV"
+        echo "GIT_COMMITTER_NAME=Flutter CI" >> "$GITHUB_ENV"
+        echo "GIT_COMMITTER_EMAIL=flutter-ci@users.noreply.github.com" >> "$GITHUB_ENV"
     - name: Select a public bootstrap Engine
       id: baseline
       shell: bash
@@ -64,15 +71,18 @@ runs:
       if: inputs.engine == 'true'
       shell: bash
       run: |
-        git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/flutter-depot-tools"
-        echo "$RUNNER_TEMP/flutter-depot-tools" >> "$GITHUB_PATH"
+        git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+        echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
     - name: Ensure macOS Ninja is available
       if: inputs.engine == 'true' && runner.os == 'macOS'
       shell: bash
       run: |
-        if ! command -v ninja >/dev/null; then
+        if ! brew list --versions ninja >/dev/null 2>&1; then
           brew install ninja
         fi
+        ninja_bin="$(brew --prefix ninja)/bin"
+        "$ninja_bin/ninja" --version
+        echo "$ninja_bin" >> "$GITHUB_PATH"
     - name: Prepare the public Metal compiler component
       if: inputs.engine == 'true' && runner.os == 'macOS'
       shell: bash

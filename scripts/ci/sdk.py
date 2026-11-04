@@ -289,7 +289,10 @@ def run_sdk(runner: Runner, shard: str, subshard: str) -> None:
     if shard == "analyze":
         prepare_ktlint(runner)
     env = os.environ.copy()
-    env.update(SHARD=shard, SUBSHARD=subshard, FLUTTER_ROOT=str(runner.root))
+    env.update(SHARD=shard, FLUTTER_ROOT=str(runner.root))
+    env.pop("SUBSHARD", None)
+    if subshard:
+        env["SUBSHARD"] = subshard
     if shard == "analyze":
         env["LUCI_CI"] = "true"
     if shard == "framework_tests":

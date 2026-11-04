@@ -289,9 +289,13 @@ class Android:
             (self.outputs / "java-build.gradle.original").write_text(original)
             (self.outputs / "java-build.gradle.runner").write_text(patched)
             gradle.write_text(patched)
+        env = dict(os.environ)
+        # run_java_tests selects the ref's vendored ANDROID_HOME and JAVA_HOME.
+        # The runner's deprecated SDK_ROOT would conflict with that SDK in AGP.
+        env.pop("ANDROID_SDK_ROOT", None)
         try:
             self.run([sys.executable, "flutter/testing/run_tests.py", "--type", "java",
-                      "--android-variant", name], self.src)
+                      "--android-variant", name], self.src, env)
         finally:
             if not self.dry_run:
                 gradle.write_text(original)

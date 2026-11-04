@@ -154,6 +154,31 @@ class StrictGoldenTests(unittest.TestCase):
                     sdk.strict_goldens(source)
 
 
+class SdkEnvironmentTests(unittest.TestCase):
+    def preview_environment(self, subshard):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = mock.Mock(root=Path(directory) / "flutter", outputs=Path(directory))
+            with mock.patch.dict(os.environ, {
+                "FLUTTER_PREBUILT_ENGINE_VERSION": "published-engine",
+                "JAVA_HOME": "/jdk",
+                "SUBSHARD": "inherited-partition",
+            }, clear=True):
+                sdk.run_sdk(runner, "android_preview_tool_integration_tests", subshard)
+            return runner.run.call_args.kwargs["env"]
+
+    def test_unpartitioned_preview_omits_subshard_to_run_all_target_tests(self):
+        # The target's selectIndexOfTotalSubshard returns all tests when this
+        # variable is absent, but rejects an empty string or inherited value.
+        env = self.preview_environment("")
+        self.assertNotIn("SUBSHARD", env)
+        self.assertEqual(env["SHARD"], "android_preview_tool_integration_tests")
+
+    def test_explicit_preview_partitions_are_preserved(self):
+        for subshard in ("1_3", "2_3", "3_3"):
+            with self.subTest(subshard=subshard):
+                self.assertEqual(self.preview_environment(subshard)["SUBSHARD"], subshard)
+
+
 class HostTests(unittest.TestCase):
     def test_metal_variant_is_removed_without_removing_dart_cases_or_software_backends(self):
         source = "  impeller_backends = ['', 'vulkan', 'opengles']\n  if is_mac():\n    impeller_backends.append('metal')\n  for test in dart_tests:\n    run(test)\n"

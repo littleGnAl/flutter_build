@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import sys
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -113,6 +114,71 @@ class AndroidConfigurationTest(unittest.TestCase):
                 runner.run([sys.executable, "-c", "print('failure-detail'); raise SystemExit(7)"])
             self.assertEqual(result.exception.returncode, 7)
             self.assertIn("failure-detail", (root / "results/android-run.log").read_text())
+
+    def test_java_entrypoint_does_not_inherit_a_conflicting_host_sdk_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            src = root / "engine/src"
+            entrypoint = src / "flutter/testing/run_tests.py"
+            entrypoint.parent.mkdir(parents=True)
+            fixture = Path(__file__).parent / "fixtures/flutter_225e8f4_java_tests.py"
+            entrypoint.write_text(fixture.read_text() + textwrap.dedent('''
+                import subprocess
+                import sys
+
+                BUILDROOT_DIR = os.path.abspath(os.path.join(__file__, '..', '..', '..'))
+                OUT_DIR = os.path.join(BUILDROOT_DIR, 'out')
+                is_windows = lambda: False
+                is_mac = lambda: False
+
+                def run_cmd(command, cwd, env):
+                    subprocess.run(command, cwd=cwd, env=env, check=True)
+
+                run_java_tests(None, sys.argv[-1])
+            '''))
+            gradle_build = src / "flutter/shell/platform/android/test_runner/build.gradle"
+            gradle_build.parent.mkdir(parents=True)
+            original = 'jvmArgs "-Xmx8g"\nmaxParallelForks availableProcessors\n'
+            gradle_build.write_text(original)
+            gradle = src / "flutter/third_party/gradle/bin/gradle"
+            gradle.parent.mkdir(parents=True)
+            # Only the final Gradle process is fake. The real target-ref Java
+            # entrypoint still chooses its SDK and JDK in a child process.
+            gradle.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''
+                import json
+                import os
+                from pathlib import Path
+
+                variables = ('ANDROID_HOME', 'ANDROID_SDK_ROOT', 'JAVA_HOME')
+                env = {key: os.environ[key] for key in variables if key in os.environ}
+                Path(os.environ['JAVA_TEST_CAPTURE']).write_text(json.dumps(env))
+                sdk_root = os.environ.get('ANDROID_SDK_ROOT')
+                if sdk_root and sdk_root != os.environ['ANDROID_HOME']:
+                    raise SystemExit('Several environment variables and/or system properties '
+                                     'contain different paths to the SDK.')
+            '''))
+            gradle.chmod(0o755)
+            captured = root / "gradle-env.json"
+            for sdk_root in ("/usr/local/lib/android/sdk", None):
+                with self.subTest(host_sdk_root=sdk_root), mock.patch.dict(android.os.environ, {
+                    "ANDROID_HOME": "/usr/local/lib/android/sdk",
+                    "JAVA_HOME": "/host/jdk25",
+                    "JAVA_TEST_CAPTURE": str(captured),
+                    "FLUTTER_TEST_OUTPUTS_DIR": str(root / "results"),
+                }):
+                    if sdk_root:
+                        android.os.environ["ANDROID_SDK_ROOT"] = sdk_root
+                    else:
+                        android.os.environ.pop("ANDROID_SDK_ROOT", None)
+                    inherited = dict(android.os.environ)
+                    android.Android(root).java(build=False)
+                    env = json.loads(captured.read_text())
+                    self.assertNotIn("ANDROID_SDK_ROOT", env)
+                    self.assertEqual(env["ANDROID_HOME"], str(src / "flutter/third_party/android_tools/sdk"))
+                    self.assertEqual(Path(env["JAVA_HOME"]).resolve(),
+                                     src / "flutter/third_party/java/openjdk")
+                    self.assertEqual(dict(android.os.environ), inherited)
+                    self.assertEqual(gradle_build.read_text(), original)
 
     def test_remote_execution_is_removed_without_losing_target_flags(self):
         result = android.local_gn(["--android", "--android-cpu=x64", "--rbe", "--no-goma"])
