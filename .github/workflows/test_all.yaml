@@ -1,5 +1,5 @@
-name: Test Flutter all supported suites
-run-name: Flutter tests · ${{ inputs.flutter_repo }}@${{ inputs.flutter_ref }}
+name: Test Flutter Android and iOS
+run-name: Flutter Android/iOS tests · ${{ inputs.flutter_repo }}@${{ inputs.flutter_ref }}
 on:
   workflow_dispatch:
     inputs:
@@ -57,9 +57,9 @@ jobs:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
       resolved_sha: ${{ needs.resolve.outputs.sha }}
-  sdk:
+  android-tools:
     needs: resolve
-    uses: ./.github/workflows/test_sdk.yaml
+    uses: ./.github/workflows/test_android_tools.yaml
     with:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
