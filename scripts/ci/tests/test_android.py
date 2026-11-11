@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import sys
 import textwrap
@@ -15,6 +17,69 @@ spec.loader.exec_module(android)
 
 
 class AndroidConfigurationTest(unittest.TestCase):
+    def test_devicelab_plugin_dependencies_use_central_and_restore_settings(self):
+        # Flutter Tools is an included build with independent plugin repositories.
+        original = b"""dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+"""
+        for exit_code in (0, 7):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                settings = root / "packages/flutter_tools/gradle/settings.gradle.kts"
+                settings.parent.mkdir(parents=True)
+                settings.write_bytes(original)
+                with mock.patch.dict(os.environ, {"FLUTTER_TEST_OUTPUTS_DIR": str(root / "results")}):
+                    runner = android.Android(root, False)
+
+                def execute(command, cwd=None, env=None):
+                    if "bin/run.dart" not in command:
+                        self.assertEqual(settings.read_bytes(), original)
+                        return
+                    patched = settings.read_text()
+                    plugins = patched.split("dependencyResolutionManagement", 1)[0]
+                    self.assertIn("pluginManagement", plugins)
+                    self.assertLess(plugins.index("mavenCentral()"), plugins.index("gradlePluginPortal()"))
+                    self.assertTrue(settings.read_bytes().endswith(original))
+                    self.assertEqual(command[1:4], ["bin/run.dart", "--task", "module_custom_host_app_name_test"])
+                    if exit_code:
+                        raise subprocess.CalledProcessError(exit_code, command)
+
+                with mock.patch.object(runner, "run", side_effect=execute):
+                    if exit_code:
+                        with self.assertRaises(subprocess.CalledProcessError) as failure:
+                            runner.task("module_custom_host_app_name_test", [])
+                        self.assertEqual(failure.exception.returncode, exit_code)
+                    else:
+                        runner.task("module_custom_host_app_name_test", [])
+                self.assertEqual(settings.read_bytes(), original)
+                patch = (runner.outputs / "flutter-gradle-settings.patch").read_text()
+                self.assertIn("+        mavenCentral()", patch)
+                self.assertIn("+        gradlePluginPortal()", patch)
+
+    def test_plugin_repository_adaptation_preserves_explicit_ref_policy_and_dry_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = root / "results"
+            settings = root / "packages/flutter_tools/gradle/settings.gradle.kts"
+            settings.parent.mkdir(parents=True)
+            explicit = b"pluginManagement { repositories { mavenCentral(); gradlePluginPortal() } }\r\n"
+            settings.write_bytes(explicit)
+            with android.flutter_plugin_repositories(root, outputs):
+                self.assertEqual(settings.read_bytes(), explicit)
+            implicit = b"dependencyResolutionManagement { repositories { mavenCentral() } }\r\n"
+            settings.write_bytes(implicit)
+            with android.flutter_plugin_repositories(root, outputs, dry_run=True):
+                self.assertEqual(settings.read_bytes(), implicit)
+            settings.unlink()
+            with android.flutter_plugin_repositories(root, outputs):
+                self.assertFalse(settings.exists())
+            self.assertFalse(outputs.exists())
+
     def policy(self, excluded=(), engine=("linux_unopt", "linux_android_emulator")):
         return SimpleNamespace(
             targets=lambda ci: [target for target in ci["targets"] if target["name"] not in excluded],

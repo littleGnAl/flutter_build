@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import difflib
 import json
 import os
 from pathlib import Path
@@ -94,6 +96,42 @@ def task_is_noop(source):
         return False
     body = re.sub(r"\s+", "", main[1])
     return body in {"", "awaittask(()async{returnTaskResult.success(null);});"}
+
+
+@contextmanager
+def flutter_plugin_repositories(root, outputs, dry_run=False):
+    """Let Flutter's included build fetch plugin dependencies from Maven Central."""
+    settings = root / "packages/flutter_tools/gradle/settings.gradle.kts"
+    if dry_run or not settings.is_file():
+        yield
+        return
+    original = settings.read_bytes()
+    source = original.decode("utf-8")
+    # Only adapt refs using the implicit Plugin Portal default. Preserve any
+    # explicit plugin repository policy supplied by the selected Flutter ref.
+    if re.search(r"(?m)^\s*pluginManagement\s*\{", source):
+        yield
+        return
+    prefix = """pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+"""
+    patched = prefix.encode("utf-8") + original
+    relative = settings.relative_to(root).as_posix()
+    outputs.mkdir(parents=True, exist_ok=True)
+    (outputs / "flutter-gradle-settings.patch").write_text("".join(difflib.unified_diff(
+        source.splitlines(keepends=True), (prefix + source).splitlines(keepends=True),
+        fromfile="a/" + relative, tofile="b/" + relative,
+    )))
+    try:
+        settings.write_bytes(patched)
+        yield
+    finally:
+        settings.write_bytes(original)
 
 
 def source_plan(root, policy=None):
@@ -319,7 +357,8 @@ class Android:
                        "--results-file", self.outputs / f"{name}.json"]
             if modes:
                 command.append("--use-emulator")
-            self.run(command, lab)
+            with flutter_plugin_repositories(self.root, self.outputs, self.dry_run):
+                self.run(command, lab)
         finally:
             if modes:
                 self.collect_adb()
