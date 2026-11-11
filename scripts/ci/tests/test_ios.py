@@ -77,7 +77,8 @@ def fixture_policy(root, branch="flutter-3.35-candidate.0", removed=()):
 def fixture_335_tasks(root):
     directory = root / "dev/devicelab/bin/tasks"
     directory.mkdir(parents=True)
-    missing = {"ios_universal_link_test", "uiscene_plugin_lifecycle_test_ios", "hello_world_impeller_ios_sdfs"}
+    missing = {"ios_universal_link_test", "uiscene_plugin_lifecycle_test_ios", "hello_world_impeller_ios_sdfs",
+               "module_uiscene_test_ios"}
     simulator = ["native_assets_ios_simulator", "hot_mode_dev_cycle_ios_simulator"]
     tasks = [task for task in ios.SIMULATOR_TASKS if task not in missing]
     baseline = ["module_test_ios", "build_ios_framework_module_test", "plugin_test_ios"]
@@ -100,6 +101,27 @@ def fixture_335_tasks(root):
     (engine / ".ci.yaml").write_text(json.dumps({"enabled_branches": configuration["enabled_branches"],
         "targets": [{"name": "Mac mac_unopt", "properties": {"config_name": "mac_unopt"}}]}))
     return simulator, baseline
+
+
+def fixture_module_uiscene_task(root):
+    # Official target and simulator contract at flutter/flutter@bc9b0371.
+    task = "module_uiscene_test_ios"
+    path = root / ".ci.yaml"
+    configuration = json.loads(path.read_text())
+    configuration["targets"].append({
+        "name": "Mac " + task,
+        "recipe": "devicelab/devicelab_drone",
+        "properties": {"task_name": task},
+    })
+    path.write_text(json.dumps(configuration))
+    (root / "dev/devicelab/bin/tasks" / (task + ".dart")).write_text("""
+await testWithNewIOSSimulator(
+  'TestAdd2AppSim',
+  deviceTypeId: 'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-3rd-generation',
+  (String deviceId) async { await testNativeApp(deviceId); },
+);
+""")
+    return task
 
 
 class IOSCITests(unittest.TestCase):
@@ -303,6 +325,34 @@ class IOSCITests(unittest.TestCase):
             path.write_text(json.dumps(config))
             with self.assertRaisesRegex(ValueError, "build-mode review"):
                 ios.simulator_tasks(root, policy=fixture_policy(root))
+
+    def test_module_uiscene_plans_and_runs_only_when_officially_scheduled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture_335_tasks(root)
+            task = fixture_module_uiscene_task(root)
+            policy = fixture_policy(root, branch="master")
+            results = root / "results"
+            plan = ios.plan_tasks(root, results, policy=policy)
+            entries = [entry for entry in plan["simulator"]["include"] if entry["task"] == task]
+            self.assertEqual(entries, [{"task": task, "source_target": "Mac " + task,
+                                       "runner": "macos-15", "cpu": "arm64", "id": "Mac-" + task}])
+            self.assertNotIn(task, [entry["task"] for entry in plan["baseline"]["include"]])
+            argv = [str(Path(ios.__file__)), "simulator", "--flutter-root", str(root),
+                    "--results", str(results), "--task", task, "--source-target", "Mac " + task]
+            with mock.patch.dict(os.environ), \
+                    mock.patch.object(ios.sys, "platform", "darwin"), \
+                    mock.patch.object(ios.platform, "machine", return_value="arm64"), \
+                    mock.patch.object(ios.Policy, "load", return_value=policy), \
+                    mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(ios, "run", side_effect=[0, 0, 9]) as run:
+                self.assertEqual(ios.main(), 1)
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_args.args[0], [root / "bin/cache/dart-sdk/bin/dart",
+                "bin/test_runner.dart", "test", "--exit", "--task", task,
+                "--results-file", str(results / (task + "-devicelab.json"))])
+            unscheduled = fixture_policy(root, branch="master", removed={"Mac " + task})
+            self.assertNotIn(task, ios.simulator_tasks(root, policy=unscheduled))
 
     def test_native_scope_respects_builder_and_per_test_branch_filters(self):
         build = fixture_build()

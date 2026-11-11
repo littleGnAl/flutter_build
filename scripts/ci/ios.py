@@ -42,6 +42,7 @@ SIMULATOR_TASKS = (
     "route_test_ios",
     "flavors_test_ios",
     "native_assets_ios_simulator",
+    "module_uiscene_test_ios",
     "uiscene_plugin_lifecycle_test_ios",
     "hello_world_impeller_ios_sdfs",
     "hot_mode_dev_cycle_ios_simulator",
