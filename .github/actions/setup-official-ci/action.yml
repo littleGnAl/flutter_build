@@ -1,0 +1,32 @@
+name: Select official Flutter CI targets
+description: Pin the official source branch and historical default-branch target inventory.
+inputs:
+  artifact-name:
+    description: Artifact to share this policy with test jobs
+    required: true
+  policy-artifact:
+    description: Reuse the policy prepared by the calling workflow
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-ci-python
+    - name: Restore the pinned official CI policy
+      if: inputs.policy-artifact != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.policy-artifact }}
+        path: test-results/
+    - name: Resolve official CI branch and target inventory
+      if: inputs.policy-artifact == ''
+      shell: bash
+      run: python3 scripts/ci/official_ci.py --flutter-root flutter
+    - name: Verify the policy belongs to the requested revision
+      shell: bash
+      run: python3 scripts/ci/official_ci.py --flutter-root flutter --verify
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: test-results/ci-policy.json
+        if-no-files-found: error
+        retention-days: 14

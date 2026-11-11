@@ -15,6 +15,10 @@ on:
         required: true
   workflow_call:
     inputs:
+      ci_policy_artifact:
+        description: Pinned official CI policy from the calling workflow
+        type: string
+        default: ''
       flutter_repo:
         type: string
         default: littleGnAl/flutter
@@ -36,6 +40,10 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       build: ${{ steps.plan.outputs.build }}
       emulator: ${{ steps.plan.outputs.emulator }}
+      embedding: ${{ steps.plan.outputs.embedding }}
+      has-build: ${{ steps.plan.outputs.has-build }}
+      has-emulator: ${{ steps.plan.outputs.has-emulator }}
+      has-embedding: ${{ steps.plan.outputs.has-embedding }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-ci-python
@@ -50,6 +58,10 @@ jobs:
           ref: ${{ steps.resolve.outputs.sha }}
           path: flutter
           persist-credentials: false
+      - uses: ./.github/actions/setup-official-ci
+        with:
+          policy-artifact: ${{ inputs.ci_policy_artifact }}
+          artifact-name: official-ci-policy-android-${{ steps.resolve.outputs.sha }}
       - id: plan
         env:
           FLUTTER_RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
@@ -64,15 +76,19 @@ jobs:
 
   embedding:
     needs: resolve
+    if: needs.resolve.outputs.has-embedding == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      matrix:
-        suite: [java, native]
+      matrix: ${{ fromJSON(needs.resolve.outputs.embedding) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/free-linux-disk-space
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -122,6 +138,7 @@ jobs:
 
   app-engine:
     needs: resolve
+    if: needs.resolve.outputs.has-emulator == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -131,6 +148,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/free-linux-disk-space
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -161,6 +182,7 @@ jobs:
 
   emulator:
     needs: [resolve, app-engine]
+    if: needs.resolve.outputs.has-emulator == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -169,6 +191,10 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve.outputs.emulator) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -228,6 +254,7 @@ jobs:
 
   build-compatibility:
     needs: resolve
+    if: needs.resolve.outputs.has-build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -236,6 +263,10 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve.outputs.build) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}

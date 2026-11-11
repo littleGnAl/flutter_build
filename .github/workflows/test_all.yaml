@@ -30,6 +30,15 @@ jobs:
           FLUTTER_REPO_INPUT: ${{ inputs.flutter_repo }}
           FLUTTER_REF_INPUT: ${{ inputs.flutter_ref }}
         run: python3 scripts/ci/resolve_ref.py --repo "$FLUTTER_REPO_INPUT" --ref "$FLUTTER_REF_INPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.flutter_repo }}
+          ref: ${{ steps.ref.outputs.sha }}
+          path: flutter
+          persist-credentials: false
+      - uses: ./.github/actions/setup-official-ci
+        with:
+          artifact-name: official-ci-policy-${{ steps.ref.outputs.sha }}
       - name: Record revision
         env:
           SOURCE_SHA: ${{ steps.ref.outputs.sha }}
@@ -50,6 +59,7 @@ jobs:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
       resolved_sha: ${{ needs.resolve.outputs.sha }}
+      ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   ios:
     needs: resolve
     uses: ./.github/workflows/test_ios.yaml
@@ -57,6 +67,7 @@ jobs:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
       resolved_sha: ${{ needs.resolve.outputs.sha }}
+      ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   android-tools:
     needs: resolve
     uses: ./.github/workflows/test_android_tools.yaml
@@ -64,6 +75,7 @@ jobs:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
       resolved_sha: ${{ needs.resolve.outputs.sha }}
+      ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   android-goldens:
     needs: resolve
     uses: ./.github/workflows/test_android_goldens.yaml
@@ -71,3 +83,4 @@ jobs:
       flutter_repo: ${{ inputs.flutter_repo }}
       flutter_ref: ${{ inputs.flutter_ref }}
       resolved_sha: ${{ needs.resolve.outputs.sha }}
+      ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}

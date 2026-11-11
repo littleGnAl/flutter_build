@@ -15,6 +15,10 @@ on:
         required: true
   workflow_call:
     inputs:
+      ci_policy_artifact:
+        description: Pinned official CI policy from the calling workflow
+        type: string
+        default: ''
       flutter_repo:
         type: string
         default: littleGnAl/flutter
@@ -62,9 +66,20 @@ jobs:
           path: flutter
           persist-credentials: false
       - uses: ./.github/actions/setup-ci-python
+      - uses: ./.github/actions/setup-official-ci
+        with:
+          policy-artifact: ${{ inputs.ci_policy_artifact }}
+          artifact-name: official-ci-policy-android-tools-${{ needs.resolve.outputs.sha }}
       - name: Read Android tool partitions from the requested Flutter CI
         id: plan
         run: python3 scripts/ci/sdk.py plan >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-tools-plan-${{ needs.resolve.outputs.sha }}
+          path: test-results/android-tools-plan.json
+          if-no-files-found: error
+          retention-days: 14
 
   android-tools:
     name: ${{ matrix.name }}
@@ -82,6 +97,10 @@ jobs:
           persist-credentials: false
       - name: Free Android runner disk space
         uses: ./.github/actions/free-linux-disk-space
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-tools-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -101,8 +120,9 @@ jobs:
         env:
           SDK_SHARD: ${{ matrix.shard }}
           SDK_SUBSHARD: ${{ matrix.subshard }}
+          ANDROID_SDK_VERSION: ${{ matrix.android_sdk }}
         shell: bash
-        run: xvfb-run -a python3 scripts/ci/sdk.py sdk --shard "$SDK_SHARD" --subshard "$SDK_SUBSHARD"
+        run: xvfb-run -a python3 scripts/ci/sdk.py sdk --shard "$SDK_SHARD" --subshard "$SDK_SUBSHARD" --android-sdk "$ANDROID_SDK_VERSION"
       - name: Upload Android tool test results
         if: always()
         uses: actions/upload-artifact@v4

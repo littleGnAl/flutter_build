@@ -9,6 +9,8 @@ import unittest
 from unittest import mock
 
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
 SPEC = importlib.util.spec_from_file_location("ios_ci", Path(__file__).parents[1] / "ios.py")
 ios = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ios)
@@ -21,6 +23,10 @@ def fixture_build(extension=False):
                "--rbe", "--xcode-symlinks", "--runtime-mode", "debug",
                "--target-dir", variant] + (["--darwin-extension-safe"] if extension else []),
         "ninja": {"config": variant, "targets": ["flutter/testing/ios_scenario_app", "ios_test_flutter"]},
+        "tests": [
+            {"script": "flutter/testing/run_tests.py", "parameters": ["--variant", variant, "--type", "objc", "--ios-variant", variant]},
+            {"script": "flutter/testing/ios_scenario_app/run_ios_tests.sh", "parameters": [variant]},
+        ],
     }
 
 
@@ -56,6 +62,18 @@ def fixture_native_runners(root, *, legacy_embedding=False, legacy_shell=False):
     return embedding, shell, dart
 
 
+def native_policy():
+    policy = mock.Mock(branch="master")
+    policy.engine_enabled.return_value = True
+    return policy
+
+
+def fixture_policy(root, branch="flutter-3.35-candidate.0", removed=()):
+    targets = json.loads((root / ".ci.yaml").read_text())["targets"]
+    return ios.Policy(branch=branch, root_targets={t["name"] for t in targets} - set(removed),
+                      engine_targets={"Mac mac_unopt"}, source_sha="", official_sha="", default_sha="")
+
+
 def fixture_335_tasks(root):
     directory = root / "dev/devicelab/bin/tasks"
     directory.mkdir(parents=True)
@@ -63,10 +81,24 @@ def fixture_335_tasks(root):
     simulator = ["native_assets_ios_simulator", "hot_mode_dev_cycle_ios_simulator"]
     tasks = [task for task in ios.SIMULATOR_TASKS if task not in missing]
     baseline = ["module_test_ios", "build_ios_framework_module_test", "plugin_test_ios"]
-    (root / ".ci.yaml").write_text("\n".join("      task_name: " + task for task in [*tasks, *baseline]))
+    targets = []
     for task in [*tasks, *baseline]:
+        prefix = "Mac_x64" if task == "hot_mode_dev_cycle_ios_simulator" else "Mac_arm64"
+        targets.append({"name": prefix + " " + task, "properties": {"task_name": task}})
         source = "testWithNewIOSSimulator('sim', callback);" if task in simulator else "await task(physicalDeviceTask());"
         (directory / (task + ".dart")).write_text(source)
+    configuration = {
+        "enabled_branches": ["master", "flutter-.*-candidate.*"],
+        "platform_properties": {"mac_x64": {"properties": {"cpu": "x86"}},
+                                "mac_arm64": {"properties": {"cpu": "arm64"}}},
+        "targets": targets,
+    }
+    (root / ".ci.yaml").write_text(json.dumps(configuration))
+    engine = root / "engine/src/flutter"
+    (engine / "ci/builders").mkdir(parents=True)
+    (engine / "ci/builders/mac_unopt.json").write_text(json.dumps({"builds": [fixture_build(), fixture_build(True)]}))
+    (engine / ".ci.yaml").write_text(json.dumps({"enabled_branches": configuration["enabled_branches"],
+        "targets": [{"name": "Mac mac_unopt", "properties": {"config_name": "mac_unopt"}}]}))
     return simulator, baseline
 
 
@@ -97,15 +129,6 @@ class IOSCITests(unittest.TestCase):
             builder.write_text(json.dumps({"builds": [fixture_build(), fixture_build()]}))
             with self.assertRaisesRegex(ValueError, "Expected one"):
                 ios.find_build(root, "ios")
-
-    def test_app_variants_avoid_nested_xcode_engine_root(self):
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(ios, "run") as run:
-            root = Path(temporary)
-            variant = ios.build_engine(root, fixture_build(), root / "results", 2, app_artifacts=True)
-            self.assertEqual(variant, "ios_debug_unopt_sim_arm64")
-            self.assertIn("ios_debug_unopt_sim_arm64", run.call_args_list[0].args[0])
-            self.assertNotIn("ci/ios_debug_unopt_sim_arm64", run.call_args_list[0].args[0])
-            self.assertIn("default", run.call_args_list[1].args[0])
 
     def test_runtime_chooses_latest_available_compatible_ios(self):
         device = "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"
@@ -140,7 +163,7 @@ class IOSCITests(unittest.TestCase):
                     mock.patch.object(ios, "build_engine", return_value="ci/ios_debug_unopt_sim_arm64"), \
                     mock.patch.object(ios.subprocess, "check_output", return_value=json.dumps({"runtimes": [runtime]})), \
                     mock.patch.object(ios, "run", side_effect=[7, 0]) as run:
-                self.assertEqual(ios.run_native(root, results, 2, False), 1)
+                self.assertEqual(ios.run_native(root, results, 2, False, policy=native_policy()), 1)
             self.assertEqual(run.call_count, 2)
             self.assertIn("--ios-runtime", run.call_args_list[0].args[0])
             self.assertIn("--os-runtime=" + runtime["identifier"], run.call_args_list[1].args[0])
@@ -174,7 +197,7 @@ class IOSCITests(unittest.TestCase):
                     mock.patch.object(ios, "build_engine", return_value="ci/ios_debug_unopt_sim_arm64"), \
                     mock.patch.object(ios.subprocess, "check_output", return_value=json.dumps({"runtimes": [runtime]})), \
                     mock.patch.object(ios, "run", side_effect=execute):
-                self.assertEqual(ios.run_native(root, results, 2, False), 1)
+                self.assertEqual(ios.run_native(root, results, 2, False, policy=native_policy()), 1)
             self.assertEqual(runner.read_text(), original)
             self.assertTrue((results / "embedding-runner.patch").is_file())
 
@@ -199,7 +222,7 @@ class IOSCITests(unittest.TestCase):
                     mock.patch.object(ios, "build_engine", return_value="ci/ios_debug_unopt_sim_arm64"), \
                     mock.patch.object(ios.subprocess, "check_output", return_value=json.dumps({"runtimes": [runtime]})), \
                     mock.patch.object(ios, "run", side_effect=execute):
-                self.assertEqual(ios.run_native(root, results, 2, False), 0)
+                self.assertEqual(ios.run_native(root, results, 2, False, policy=native_policy()), 0)
             self.assertEqual((src / "flutter/testing/ios_scenario_app/run_ios_tests.sh").read_text(), original_shell)
             self.assertEqual((src / "flutter/testing/ios_scenario_app/bin/run_ios_tests.dart").read_text(), original_dart)
 
@@ -210,144 +233,144 @@ class IOSCITests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid iOS simulator runtime"):
             ios.embedding_runtime_options("legacy runner", "runtime; arbitrary shell command")
 
-    def test_missing_required_task_does_not_silently_reduce_coverage(self):
+    def test_old_ref_preserves_only_available_official_tasks_and_cpu(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / ".ci.yaml").write_text("targets: []\n")
-            with self.assertRaisesRegex(ValueError, "Required core simulator task"):
-                ios.simulator_tasks(root)
-
-    def test_old_ref_runs_existing_simulator_tasks_and_reports_unavailable_features(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            simulator, _ = fixture_335_tasks(root)
-            self.assertEqual(ios.simulator_tasks(root), simulator)
+            simulator, baseline = fixture_335_tasks(root)
+            policy = fixture_policy(root)
             unavailable = []
-            self.assertEqual(ios.simulator_tasks(root, unavailable=unavailable), simulator)
+            self.assertEqual(ios.simulator_tasks(root, unavailable=unavailable, policy=policy), simulator)
+            self.assertEqual(ios.baseline_tasks(root, policy=policy), baseline)
+            entries = ios.task_entries(root, ios.SIMULATOR_TASKS, simulator=True, policy=policy)
+            runners = {entry["task"]: entry["runner"] for entry in entries}
+            self.assertEqual(runners["native_assets_ios_simulator"], "macos-15")
+            self.assertEqual(runners["hot_mode_dev_cycle_ios_simulator"], "macos-15-intel")
             reasons = {item["task"]: item["reason"] for item in unavailable}
             self.assertEqual(reasons["uiscene_plugin_lifecycle_test_ios"], "task_file_absent")
             self.assertEqual(reasons["channels_integration_test_ios"], "requires_physical_device_in_this_ref")
 
-    def test_old_ref_plan_emits_existing_baseline_matrix_and_coverage_summary(self):
+    def test_plan_emits_cpu_matrices_and_empty_job_guards(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             simulator, baseline = fixture_335_tasks(root)
+            policy = fixture_policy(root)
             results, output, summary = root / "results", root / "outputs", root / "summary"
-            environment = {**os.environ, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
-            result = subprocess.run([
-                sys.executable, str(Path(ios.__file__)), "plan", "--flutter-root", str(root),
-                "--results", str(results),
-            ], env=environment, capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = [str(Path(ios.__file__)), "plan", "--flutter-root", str(root), "--results", str(results)]
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}), \
+                    mock.patch.object(ios.Policy, "load", return_value=policy), mock.patch.object(sys, "argv", argv):
+                self.assertEqual(ios.main(), 0)
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-            self.assertEqual(json.loads(values["baseline"]), {"task": baseline})
-            coverage = json.loads((results / "ios-plan.json").read_text())
-            self.assertEqual(coverage["simulator_tasks"], simulator)
-            self.assertIn({"task": "plugin_test_darwin", "reason": "task_file_absent"}, coverage["unavailable"])
+            self.assertEqual([entry["task"] for entry in json.loads(values["baseline"])["include"]], baseline)
+            self.assertEqual([entry["task"] for entry in json.loads(values["simulator"])["include"]], simulator)
+            self.assertEqual(values["has-simulator"], "true")
+            self.assertEqual(values["has-native"], "true")
             self.assertIn("plugin_test_darwin", summary.read_text())
-            self.assertIn("unavailable", summary.read_text())
+            empty = ios.Policy(branch="master", root_targets=set(), engine_targets=set(),
+                               source_sha="", official_sha="", default_sha="")
+            with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                ios.plan_tasks(root, results, policy=empty)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+            for name in ("simulator", "baseline", "native"):
+                self.assertEqual(values["has-" + name], "false")
+                self.assertEqual(json.loads(values[name]), {"include": []})
 
-    def test_missing_core_task_still_fails_when_other_simulator_tasks_exist(self):
+    def test_release_policy_removes_bringup_and_retired_tasks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture_335_tasks(root)
-            (root / "dev/devicelab/bin/tasks/native_assets_ios_simulator.dart").unlink()
-            with self.assertRaisesRegex(ValueError, "Required core simulator task.*native_assets_ios_simulator"):
-                ios.simulator_tasks(root)
+            path = root / ".ci.yaml"
+            config = json.loads(path.read_text())
+            name = "Mac_x64 hot_mode_dev_cycle_ios_simulator"
+            next(target for target in config["targets"] if target["name"] == name)["bringup"] = True
+            path.write_text(json.dumps(config))
+            removed = "Mac_arm64 module_test_ios"
+            policy = fixture_policy(root, removed={removed})
+            self.assertEqual(ios.simulator_tasks(root, policy=policy), ["native_assets_ios_simulator"])
+            self.assertNotIn("module_test_ios", ios.baseline_tasks(root, policy=policy))
+            self.assertIn("hot_mode_dev_cycle_ios_simulator", ios.simulator_tasks(root, policy=fixture_policy(root, branch="master")))
 
-    def test_absent_ci_declaration_is_reported_and_empty_baseline_is_rejected(self):
+    def test_unscheduled_new_simulator_source_does_not_add_a_case(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixture_335_tasks(root)
-            ci = root / ".ci.yaml"
-            ci.write_text(ci.read_text().replace("      task_name: channels_integration_test_ios", ""))
-            unavailable = []
-            ios.simulator_tasks(root, unavailable=unavailable)
-            self.assertIn({"task": "channels_integration_test_ios", "reason": "not_configured_in_ci"}, unavailable)
-            ci.write_text("targets: []\n")
-            with self.assertRaisesRegex(ValueError, "No configured baseline"):
-                ios.baseline_tasks(root)
+            task = root / "dev/devicelab/bin/tasks/new_simulator_test.dart"
+            task.write_text("testWithNewIOSSimulator('sim', callback);")
+            policy = fixture_policy(root)
+            self.assertNotIn("new_simulator_test", ios.simulator_tasks(root, policy=policy))
+            path = root / ".ci.yaml"
+            config = json.loads(path.read_text())
+            config["targets"].append({"name": "Mac_arm64 new_simulator_test", "properties": {"task_name": "new_simulator_test"}})
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError, "build-mode review"):
+                ios.simulator_tasks(root, policy=fixture_policy(root))
 
-    def test_devicelab_uses_local_host_and_target_and_continues_after_failure(self):
+    def test_native_scope_respects_builder_and_per_test_branch_filters(self):
+        build = fixture_build()
+        build["tests"][1]["test_if"] = "master$"
+        self.assertEqual(set(ios.native_suites(build, mock.Mock(branch="flutter-3.35-candidate.0"))), {"embedding"})
+        self.assertEqual(set(ios.native_suites(build, native_policy())), {"embedding", "scenario"})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            results = root / "results"
-            results.mkdir()
-            binary = root / "bin/flutter"
-            binary.parent.mkdir()
-            binary.write_text("#!/bin/sh\necho original\n")
-            with mock.patch.object(ios, "simulator_tasks", return_value=["task_a", "task_b"]), \
-                    mock.patch.object(ios, "find_build"), \
-                    mock.patch.object(ios, "build_engine", side_effect=["ios_local_sim_arm64", "host_local_arm64"]), \
-                    mock.patch.object(ios, "run", side_effect=[0, 9, 0, 0, 0]) as run:
-                self.assertEqual(ios.run_devicelab(root, results, 2), 1)
-            for call in run.call_args_list[1:3]:
-                command = call.args[0]
-                self.assertIn("--local-engine", command)
-                self.assertIn("ios_local_sim_arm64", command)
-                self.assertIn("--local-engine-host", command)
-                self.assertIn("host_local_arm64", command)
-            statuses = json.loads((results / "results.json").read_text())
-            self.assertEqual(statuses["task_a"], 9)
-            self.assertEqual(statuses["task_b"], 0)
-            self.assertEqual(binary.read_text(), "#!/bin/sh\necho original\n")
-            self.assertTrue((results / "source-flutter-launcher.patch").is_file())
+            policy = native_policy()
+            policy.engine_enabled.return_value = False
+            self.assertEqual(ios.native_matrix(root, policy), {"include": []})
+            with mock.patch.object(ios, "build_engine") as build:
+                with self.assertRaisesRegex(ValueError, "does not schedule"):
+                    ios.run_native(root, root, 2, False, policy=policy)
+                build.assert_not_called()
 
-    def test_source_guard_checks_actual_mode_and_engine_selection(self):
-        config = {"root": "/checkout/flutter", "ios": "ios_debug_sim_arm64", "host": "host_debug_arm64"}
-        flags = ["--local-engine-src-path=/checkout/flutter/engine/src",
-                 "--local-engine=ios_debug_sim_arm64", "--local-engine-host=host_debug_arm64"]
-        self.assertEqual(ios.validate_source_command([*flags, "build", "ios", "--simulator"], config, {}), "debug")
-        with self.assertRaisesRegex(ValueError, "requested profile"):
-            ios.validate_source_command([*flags, "run", "--profile"], config, {})
-        with self.assertRaisesRegex(ValueError, "requested release"):
-            ios.validate_source_command([*flags, "build", "ios"], config, {})
-        with self.assertRaisesRegex(ValueError, "did not select"):
-            ios.validate_source_command(["run", "--debug"], config, {})
-
-    def test_source_guard_checks_xcode_assemble_and_allows_config_only(self):
-        config = {"root": "/checkout/flutter", "ios": "ios_debug_sim_arm64", "host": "host_debug_arm64"}
-        flags = ["--local-engine-src-path", "/checkout/flutter/engine/src",
-                 "--local-engine", "ios_debug_sim_arm64", "--local-engine-host", "host_debug_arm64"]
-        self.assertIsNone(ios.validate_source_command([*flags, "build", "ios", "--config-only"], config, {}))
-        self.assertEqual(ios.validate_source_command([*flags, "assemble", "-dBuildMode=debug"], config,
-                                                    {"SDK_NAME": "iphonesimulator26.2"}), "debug")
-        with self.assertRaisesRegex(ValueError, "physical"):
-            ios.validate_source_command([*flags, "assemble", "-dBuildMode=debug"], config,
-                                        {"SDK_NAME": "iphoneos26.2"})
-        with self.assertRaisesRegex(ValueError, "requested release"):
-            ios.validate_source_command([*flags, "assemble", "-dBuildMode=release"], config, {})
-
-    def test_multimode_compatibility_does_not_inject_debug_local_engine(self):
+    def test_simulator_executes_only_selected_official_task_without_extra_smoke(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            fixture_335_tasks(root)
             results = root / "results"
             results.mkdir()
-            (root / ".ci.yaml").write_text("      task_name: module_test_ios\n")
-            source = root / "dev/devicelab/bin/tasks/module_test_ios.dart"
-            source.parent.mkdir(parents=True)
-            source.write_text("await task(moduleTest);\n")
-            with mock.patch.object(ios, "build_engine") as build, \
+            task = "hot_mode_dev_cycle_ios_simulator"
+            with mock.patch.object(ios.sys, "platform", "darwin"), \
+                    mock.patch.object(ios.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(ios, "build_engine") as build, \
+                    mock.patch.object(ios, "run", side_effect=[0, 0, 9]) as run:
+                self.assertEqual(ios.run_devicelab(root, results, task, "Mac_x64 " + task,
+                                                 simulator=True, policy=fixture_policy(root)), 1)
+            build.assert_not_called()
+            self.assertEqual(run.call_count, 3)
+            command = run.call_args.args[0]
+            self.assertIn(task, command)
+            self.assertNotIn("--local-engine", command)
+            self.assertEqual(json.loads((results / "results.json").read_text()), {task: 9})
+            self.assertEqual(json.loads((results / "coverage.json").read_text())["cpu"], "x64")
+            self.assertFalse((root / "bin/flutter.ci-ios-original").exists())
+
+    def test_task_execution_rejects_wrong_cpu_and_unscheduled_target_before_commands(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_335_tasks(root)
+            task = "hot_mode_dev_cycle_ios_simulator"
+            with mock.patch.object(ios.sys, "platform", "darwin"), \
+                    mock.patch.object(ios.platform, "machine", return_value="arm64"), \
+                    mock.patch.object(ios, "run") as run:
+                with self.assertRaisesRegex(ValueError, "requires macOS/x86_64"):
+                    ios.run_devicelab(root, root, task, "Mac_x64 " + task, simulator=True, policy=fixture_policy(root))
+                with self.assertRaisesRegex(ValueError, "not scheduled"):
+                    ios.run_devicelab(root, root, task, "Mac_arm64 " + task, simulator=True, policy=fixture_policy(root))
+                run.assert_not_called()
+
+    def test_baseline_preserves_upstream_modes_and_has_no_local_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_335_tasks(root)
+            results = root / "results"
+            results.mkdir()
+            with mock.patch.object(ios.sys, "platform", "darwin"), \
+                    mock.patch.object(ios.platform, "machine", return_value="arm64"), \
+                    mock.patch.object(ios, "build_engine") as build, \
                     mock.patch.object(ios, "run", return_value=0) as run:
-                self.assertEqual(ios.run_devicelab(root, results, 2, "module_test_ios"), 0)
+                self.assertEqual(ios.run_devicelab(root, results, "module_test_ios", "Mac_arm64 module_test_ios",
+                                                 policy=fixture_policy(root)), 0)
             build.assert_not_called()
             self.assertNotIn("--local-engine", run.call_args.args[0])
             self.assertEqual(json.loads((results / "coverage.json").read_text())["engine_origin"],
                              "selected-framework-and-tools-with-baseline-engine")
-
-    def test_new_official_simulator_task_requires_mode_review(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            directory = root / "dev/devicelab/bin/tasks"
-            directory.mkdir(parents=True)
-            tasks = [*ios.SIMULATOR_TASKS, "new_simulator_test", "module_test_ios"]
-            (root / ".ci.yaml").write_text("\n".join("      task_name: " + task for task in tasks))
-            for task in tasks:
-                (directory / (task + ".dart")).write_text("testWithNewIOSSimulator('sim', callback);")
-            with self.assertRaisesRegex(ValueError, "build-mode review"):
-                ios.simulator_tasks(root)
-            (directory / "new_simulator_test.dart").unlink()
-            self.assertNotIn("module_test_ios", ios.simulator_tasks(root))
 
 
 if __name__ == "__main__":

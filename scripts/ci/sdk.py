@@ -21,8 +21,42 @@ ANDROID_TOOL_SHARDS = {
 }
 
 
-def ci_matrix(configuration: dict) -> dict:
+def empty_tool_runner(root: Path, shard: str) -> bool:
+    variant = shard.removeprefix("android_").removesuffix("_tool_integration_tests")
+    path = root / f"dev/bots/suite_runners/run_android_{variant}_integration_tool_tests.dart"
+    source = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(), flags=re.S)
+    function = f"android{variant.title()}IntegrationToolTestsRunner"
+    declaration = rf"Future<void>\s+{function}\s*\([^)]*\)\s*async\s*\{{"
+    if not re.search(declaration, source):
+        raise ValueError(f"Cannot identify Android tool runner {function} in {path}")
+    return bool(re.search(declaration + r"\s*\}", source))
+
+
+def target_dependencies(configuration: dict, target: dict) -> dict:
+    platform = target["name"].split()[0].lower()
+    inherited = configuration.get("platform_properties", {}).get(platform, {}).get("properties", {})
+    result = {}
+    for properties in (inherited, target.get("properties", {})):
+        dependencies = properties.get("dependencies", [])
+        if isinstance(dependencies, str):
+            dependencies = json.loads(dependencies)
+        result.update((dependency["dependency"], dependency.get("version", ""))
+                      for dependency in dependencies)
+    return result
+
+
+def android_sdk_version(configuration: dict, target: dict) -> str:
+    version = target_dependencies(configuration, target).get("android_sdk", "")
+    if not re.fullmatch(r"version:[A-Za-z0-9_.+-]+", version):
+        raise ValueError(f"Missing or unsupported Android SDK dependency for {target['name']}: {version!r}")
+    return version
+
+
+def ci_matrix(configuration: dict, root: Path, policy=None, unavailable=None) -> dict:
     """Select complete Android tool partitions from the requested revision."""
+    if policy is None:
+        from official_ci import Policy
+        policy = Policy.load(root)
     selected: dict[tuple[str, str], dict] = {}
     for target in configuration["targets"]:
         properties = target.get("properties", {})
@@ -32,19 +66,27 @@ def ci_matrix(configuration: dict) -> dict:
         name = target["name"]
         if name.split()[0] != "Linux":
             continue
+        reason = policy.rejection(target, configuration)
+        if reason is None and empty_tool_runner(root, shard):
+            reason = "official runner is an empty function"
+        if reason is not None:
+            if unavailable is not None:
+                unavailable.append({"target": name, "shard": shard, "reason": reason})
+            continue
         runner = "ubuntu-22.04"
         subshard = str(properties.get("subshard", ""))
-        dependencies = properties.get("dependencies", [])
-        if isinstance(dependencies, str):
-            dependencies = json.loads(dependencies)
-        jdk = next((dependency["version"] for dependency in dependencies if dependency["dependency"] == "open_jdk"), "")
+        dependencies = target_dependencies(configuration, target)
+        jdk = dependencies.get("open_jdk", "")
         if jdk:
             if not jdk.startswith("version:"):
                 raise ValueError(f"Unsupported JDK dependency for {name}: {jdk}")
             jdk = jdk.removeprefix("version:")
         key = shard, subshard
+        sdk_version = (android_sdk_version(configuration, target)
+                       if shard == "android_preview_tool_integration_tests" else dependencies.get("android_sdk", ""))
         entry = {"runner": runner, "shard": shard, "subshard": subshard,
-                 "name": f"Android tools {shard.removeprefix('android_')} {subshard or 'all'}", "source_target": name, "jdk": jdk}
+                 "name": f"Android tools {shard.removeprefix('android_')} {subshard or 'all'}",
+                 "source_target": name, "jdk": jdk, "android_sdk": sdk_version}
         selected.setdefault(key, entry)
 
     entries = list(selected.values())
@@ -60,20 +102,24 @@ def ci_matrix(configuration: dict) -> dict:
     return {"include": sorted(entries, key=lambda entry: entry["name"])}
 
 
-def plan_diagnostics(matrix: dict) -> list[str]:
+def plan_diagnostics(matrix: dict, unavailable=None) -> list[str]:
     entries = matrix["include"]
     present = {entry["shard"] for entry in entries}
-    diagnostics = []
+    diagnostics = [f"{item['target']}: {item['reason']}; no job scheduled."
+                   for item in unavailable or []]
+    excluded = {item["shard"] for item in unavailable or []}
     for shard in sorted(ANDROID_TOOL_SHARDS - present):
-        message = f"{shard}: not configured by the requested Flutter ref; no job scheduled."
+        if shard in excluded:
+            continue
+        message = f"{shard}: no eligible nonempty runner in the requested Flutter CI; no job scheduled."
         if shard == "android_java17_tool_integration_tests" and "android_java11_tool_integration_tests" in present:
             message += " This ref configures android_java11_tool_integration_tests instead."
         diagnostics.append(message)
     return diagnostics
 
 
-def report_plan(matrix: dict) -> None:
-    diagnostics = plan_diagnostics(matrix)
+def report_plan(matrix: dict, unavailable=None) -> None:
+    diagnostics = plan_diagnostics(matrix, unavailable)
     for message in diagnostics:
         print(f"::notice::{message}", file=sys.stderr)
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -130,24 +176,42 @@ class Runner:
                     shutil.copy2(path, destination)
 
 
-def run_sdk(runner: Runner, shard: str, subshard: str) -> None:
+def run_sdk(runner: Runner, shard: str, subshard: str, android_sdk: str = "") -> None:
     if shard not in ANDROID_TOOL_SHARDS:
         raise ValueError(f"Unsupported Android tool shard: {shard}")
     if not os.environ.get("FLUTTER_PREBUILT_ENGINE_VERSION"):
         raise ValueError("Android tool tests require an explicit official FLUTTER_PREBUILT_ENGINE_VERSION")
+    if empty_tool_runner(runner.root, shard):
+        raise ValueError(f"Official Android tool runner is empty: {shard}")
+    if shard == "android_preview_tool_integration_tests":
+        configuration = read_configuration(runner.root / ".ci.yaml")
+        targets = [target for target in configuration["targets"]
+                   if target["name"].startswith("Linux ")
+                   and target.get("properties", {}).get("shard") == shard
+                   and str(target["properties"].get("subshard", "")) == subshard]
+        if not targets:
+            raise ValueError(f"Requested Android preview partition is not configured: {subshard!r}")
+        versions = {android_sdk_version(configuration, target) for target in targets}
+        if len(versions) != 1:
+            raise ValueError(f"Conflicting Android SDK dependencies for {shard}: {sorted(versions)}")
+        configured_sdk = versions.pop()
+        if android_sdk and android_sdk != configured_sdk:
+            raise ValueError(f"Planned Android SDK {android_sdk!r} differs from target CI {configured_sdk!r}")
+        android_sdk = configured_sdk
     flutter = str(runner.root / "bin/flutter")
-    runner.manifest(kind="android-tools", shard=shard, subshard=subshard, native_engine_coverage=False)
+    runner.manifest(kind="android-tools", shard=shard, subshard=subshard, native_engine_coverage=False,
+                    android_sdk=android_sdk)
     runner.run([flutter, "config", f"--jdk-dir={os.environ['JAVA_HOME']}"])
     runner.run([flutter, "precache", "--android"])
     runner.run([flutter, "update-packages"])
+    env = os.environ.copy()
     if shard == "android_preview_tool_integration_tests":
         sdk = runner.outputs / "android-preview-sdk"
         ensure = runner.outputs / "android-sdk.ensure"
-        ensure.write_text("flutter/android/sdk/all/linux-amd64 version:baklava_v1\n")
+        ensure.write_text(f"flutter/android/sdk/all/linux-amd64 {android_sdk}\n")
         runner.run(["cipd", "ensure", "-root", str(sdk), "-ensure-file", str(ensure)])
         runner.run([flutter, "config", f"--android-sdk={sdk}"])
-        os.environ.update(ANDROID_HOME=str(sdk), ANDROID_SDK_ROOT=str(sdk))
-    env = os.environ.copy()
+        env.update(ANDROID_HOME=str(sdk), ANDROID_SDK_ROOT=str(sdk))
     env.update(SHARD=shard, FLUTTER_ROOT=str(runner.root))
     env.pop("SUBSHARD", None)
     if subshard:
@@ -164,11 +228,17 @@ def main() -> int:
     sdk = subparsers.add_parser("sdk")
     sdk.add_argument("--shard", required=True)
     sdk.add_argument("--subshard", default="")
+    sdk.add_argument("--android-sdk", default="")
     args = parser.parse_args()
     if args.command == "plan":
         configuration = read_configuration(args.flutter_root / ".ci.yaml")
-        matrix = ci_matrix(configuration)
-        report_plan(matrix)
+        unavailable = []
+        matrix = ci_matrix(configuration, args.flutter_root, unavailable=unavailable)
+        report_plan(matrix, unavailable)
+        args.outputs.mkdir(parents=True, exist_ok=True)
+        (args.outputs / "android-tools-plan.json").write_text(json.dumps({
+            "matrix": matrix, "excluded": unavailable,
+        }, indent=2) + "\n")
         print("matrix=" + json.dumps(matrix, separators=(",", ":")))
         print("has-tests=" + str(bool(matrix["include"])).lower())
         return 0
@@ -176,7 +246,7 @@ def main() -> int:
     runner = Runner(args.flutter_root, args.outputs, name)
     result = "failure"
     try:
-        run_sdk(runner, args.shard, args.subshard)
+        run_sdk(runner, args.shard, args.subshard, args.android_sdk)
         result = "success"
         return 0
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

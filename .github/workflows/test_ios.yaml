@@ -19,6 +19,10 @@ on:
         default: ''
   workflow_call:
     inputs:
+      ci_policy_artifact:
+        description: Pinned official CI policy from the calling workflow
+        type: string
+        default: ''
       flutter_repo:
         type: string
         default: littleGnAl/flutter
@@ -42,6 +46,11 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       baseline: ${{ steps.plan.outputs.baseline }}
+      simulator: ${{ steps.plan.outputs.simulator }}
+      native: ${{ steps.plan.outputs.native }}
+      has-baseline: ${{ steps.plan.outputs.has-baseline }}
+      has-simulator: ${{ steps.plan.outputs.has-simulator }}
+      has-native: ${{ steps.plan.outputs.has-native }}
     steps:
       - uses: actions/checkout@v4
       - id: resolve
@@ -62,6 +71,10 @@ jobs:
           ref: ${{ steps.resolve.outputs.sha }}
           path: flutter
           persist-credentials: false
+      - uses: ./.github/actions/setup-official-ci
+        with:
+          policy-artifact: ${{ inputs.ci_policy_artifact }}
+          artifact-name: official-ci-policy-ios-${{ steps.resolve.outputs.sha }}
       - name: Plan tasks available in the selected Flutter revision
         id: plan
         run: python3 scripts/ci/ios.py plan --flutter-root flutter --results test-results
@@ -75,12 +88,12 @@ jobs:
   native:
     name: Native embedding and scenario (${{ matrix.variant }})
     needs: resolve
+    if: needs.resolve.outputs.has-native == 'true'
     runs-on: macos-15
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      matrix:
-        variant: [normal, extension-safe]
+      matrix: ${{ fromJSON(needs.resolve.outputs.native) }}
     env:
       FLUTTER_ROOT: ${{ github.workspace }}/flutter
       FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results
@@ -88,10 +101,15 @@ jobs:
       LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ci-python
       - name: Select installed Xcode before gclient SDK hooks
         env:
           XCODE_VERSION: ${{ inputs.xcode_version }}
         run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-ios-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -115,10 +133,15 @@ jobs:
           retention-days: 14
 
   simulator:
-    name: DeviceLab simulator functionality with source Engine
+    name: Simulator (${{ matrix.source_target }}, baseline Engine)
     needs: resolve
-    runs-on: macos-15
+    if: needs.resolve.outputs.has-simulator == 'true'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.resolve.outputs.simulator) }}
     env:
       FLUTTER_ROOT: ${{ github.workspace }}/flutter
       FLUTTER_TEST_OUTPUTS_DIR: ${{ github.workspace }}/test-results
@@ -126,31 +149,40 @@ jobs:
       LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
-      - name: Select installed Xcode before gclient SDK hooks
+      - uses: ./.github/actions/setup-ci-python
+      - name: Select installed Xcode
         env:
           XCODE_VERSION: ${{ inputs.xcode_version }}
         run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-ios-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
           flutter_sha: ${{ needs.resolve.outputs.sha }}
-          engine: 'true'
-      - name: Build local host and simulator Engines and run all simulator tasks
-        run: python3 scripts/ci/ios.py simulator --jobs 2
+          engine: 'false'
+      - name: Run the official simulator task on its declared CPU
+        env:
+          TASK: ${{ matrix.task }}
+          SOURCE_TARGET: ${{ matrix.source_target }}
+        run: python3 scripts/ci/ios.py simulator --task "$TASK" --source-target "$SOURCE_TARGET"
       - name: Collect simulator diagnostics
         if: always()
         run: python3 scripts/ci/ios.py diagnostics
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ios-source-simulator-${{ needs.resolve.outputs.sha }}
+          name: ios-simulator-${{ matrix.id }}-${{ needs.resolve.outputs.sha }}
           path: test-results/
           retention-days: 14
 
   build-compatibility:
-    name: SDK compatibility (${{ matrix.task }}, baseline Engine)
+    name: SDK compatibility (${{ matrix.source_target }}, baseline Engine)
     needs: resolve
-    runs-on: macos-15
+    if: needs.resolve.outputs.has-baseline == 'true'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -163,10 +195,15 @@ jobs:
       LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ci-python
       - name: Select installed Xcode
         env:
           XCODE_VERSION: ${{ inputs.xcode_version }}
         run: python3 scripts/ci/ios.py select-xcode --xcode-version "$XCODE_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-ios-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}
@@ -175,13 +212,14 @@ jobs:
       - name: Run complete upstream task across its original build modes
         env:
           TASK: ${{ matrix.task }}
-        run: python3 scripts/ci/ios.py baseline --task "$TASK"
+          SOURCE_TARGET: ${{ matrix.source_target }}
+        run: python3 scripts/ci/ios.py baseline --task "$TASK" --source-target "$SOURCE_TARGET"
       - name: Collect simulator diagnostics
         if: always()
         run: python3 scripts/ci/ios.py diagnostics
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ios-baseline-${{ matrix.task }}-${{ needs.resolve.outputs.sha }}
+          name: ios-baseline-${{ matrix.id }}-${{ needs.resolve.outputs.sha }}
           path: test-results/
           retention-days: 14

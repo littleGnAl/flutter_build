@@ -15,6 +15,10 @@ on:
         type: string
   workflow_call:
     inputs:
+      ci_policy_artifact:
+        description: Pinned official CI policy from the calling workflow
+        type: string
+        default: ''
       flutter_repo:
         default: littleGnAl/flutter
         type: string
@@ -32,6 +36,7 @@ jobs:
     outputs:
       sha: ${{ steps.ref.outputs.sha }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      has-tests: ${{ steps.plan.outputs.has-tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +53,10 @@ jobs:
           path: flutter
           persist-credentials: false
       - uses: ./.github/actions/setup-ci-python
+      - uses: ./.github/actions/setup-official-ci
+        with:
+          policy-artifact: ${{ inputs.ci_policy_artifact }}
+          artifact-name: official-ci-policy-android-goldens-${{ steps.ref.outputs.sha }}
       - id: plan
         run: python3 scripts/ci/golden.py --plan --flutter-root flutter >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
@@ -59,6 +68,7 @@ jobs:
           retention-days: 14
   golden:
     needs: resolve
+    if: needs.resolve.outputs.has-tests == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     strategy:
@@ -83,6 +93,10 @@ jobs:
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm
           test -w /dev/kvm
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-ci-policy-android-goldens-${{ needs.resolve.outputs.sha }}
+          path: test-results/
       - uses: ./.github/actions/setup-flutter-tests
         with:
           flutter_repo: ${{ inputs.flutter_repo }}

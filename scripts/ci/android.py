@@ -42,17 +42,6 @@ EMULATOR_MODES = {
     "android_intent_parsing_test": ["debug", "profile", "release"],
 }
 
-# Functional DeviceLab tasks whose official device assignment is physical but
-# whose assertions can also run on an emulator. Performance tasks are excluded.
-ADAPTED_TASKS = (
-    "channels_integration_test", "hybrid_android_views_integration_test",
-    "integration_ui_driver", "integration_ui_keyboard_resize", "integration_ui_textfield",
-    "platform_channel_sample_test", "platform_interaction_test", "routing_test",
-    "service_extensions_test", "flavors_test", "integration_test_test",
-    "run_debug_test_android", "run_release_test",
-)
-
-
 def dependencies(value):
     return json.loads(value) if isinstance(value, str) else (value or [])
 
@@ -96,21 +85,42 @@ def android_ndk(root):
     raise ValueError("Cannot determine the target ref's Android NDK version from its Flutter extension")
 
 
-def source_plan(root):
+def task_is_noop(source):
+    """Recognize the upstream placeholder without excluding future real tests."""
+    source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+    main = re.search(r"\b(?:Future<void>|void)\s+main\s*\([^)]*\)\s*(?:async\s*)?\{(.*)\}\s*$",
+                     source, re.S)
+    if not main:
+        return False
+    body = re.sub(r"\s+", "", main[1])
+    return body in {"", "awaittask(()async{returnTaskResult.success(null);});"}
+
+
+def source_plan(root, policy=None):
     import yaml
+    if policy is None:
+        from official_ci import Policy
+        policy = Policy.load(root)
 
     ci = yaml.safe_load((root / ".ci.yaml").read_text())
     platforms = ci["platform_properties"]
-    targets = ci["targets"]
+    targets = policy.targets(ci)
     ndk, ndk_source = android_ndk(root)
-    supported = {t["properties"]["task_name"]: t for t in targets
-                 if t.get("properties", {}).get("task_name")}
     builds = []
     unavailable = []
 
     def task_source(task):
-        if not (root / f"dev/devicelab/bin/tasks/{task}.dart").is_file():
+        path = root / f"dev/devicelab/bin/tasks/{task}.dart"
+        if not path.is_file():
             raise ValueError(f"Configured Android CI task has no source file: {task}")
+        return path.read_text()
+
+    def absent_reason(task, prefix):
+        candidates = [target for target in ci["targets"]
+                      if target["name"].startswith(prefix)
+                      and target.get("properties", {}).get("task_name") == task]
+        reasons = [policy.rejection(target, ci) for target in candidates]
+        return "; ".join(sorted({reason for reason in reasons if reason})) or "not configured by this ref's CI"
 
     def jdk(target, platform):
         version = (dependency(target.get("properties", {}), "open_jdk")
@@ -124,9 +134,12 @@ def source_plan(root):
                        and t.get("properties", {}).get("task_name") == task), None)
         if target is None:
             unavailable.append({"task": task, "suite": "build",
-                                "reason": "not configured by this ref's CI"})
+                                "reason": absent_reason(task, "Linux ")})
             continue
-        task_source(task)
+        if task_is_noop(task_source(task)):
+            unavailable.append({"task": task, "suite": "build",
+                                "reason": "official task is a no-op placeholder"})
+            continue
         builds.append({"task": task, "jdk": jdk(target, "linux")})
     # Detect newly configured Android host checks rather than quietly omitting
     # them. Benchmarks are owned by dedicated performance infrastructure.
@@ -149,7 +162,10 @@ def source_plan(root):
             continue
         if task not in EMULATOR_MODES:
             raise ValueError(f"New Android emulator task needs an explicit mode/coverage decision: {task}")
-        task_source(task)
+        if task_is_noop(task_source(task)):
+            unavailable.append({"task": task, "suite": "emulator",
+                                "reason": "official task is a no-op placeholder"})
+            continue
         avd_version = (dependency(target.get("properties", {}), "android_virtual_device")
                        or dependency(platforms[platform]["properties"], "android_virtual_device"))
         avd = avd_configuration(avd_version)
@@ -158,33 +174,21 @@ def source_plan(root):
                          "jdk": jdk(target, platform), **avd})
     configured_emulator = {item["task"] for item in emulator}
     unavailable.extend({"task": task, "suite": "emulator",
-                        "reason": "not configured on an Android emulator by this ref's CI"}
-                       for task in EMULATOR_MODES if task not in configured_emulator)
-    default_avd = avd_configuration(dependency(platforms["linux_android_emu"]["properties"],
-                                               "android_virtual_device"))
-    for task in ADAPTED_TASKS:
-        if task not in supported:
-            unavailable.append({"task": task, "suite": "adapted-emulator",
-                                "reason": "not configured by this ref's CI"})
-            continue
-        if not (root / f"dev/devicelab/bin/tasks/{task}.dart").is_file():
-            unavailable.append({"task": task, "suite": "adapted-emulator",
-                                "reason": "CI entry exists, but this ref has no task source file"})
-            continue
-        task_source(task)
-        mode = ("release" if task == "run_release_test" else
-                "debug,release" if task == "flavors_test" else "debug")
-        emulator.append({"task": task, "id": f"{task}-adapted", "modes": mode,
-                         "ndk": ndk, "jdk": jdk({"name": task}, "linux_android_emu"), **default_avd})
-    if not builds or not emulator:
-        raise ValueError("Selected ref has an empty Android build or emulator test collection")
-    core = {"build_aar_module_test", "android_views"}
-    missing_core = core - ({item["task"] for item in builds} | configured_emulator)
-    if missing_core:
-        raise ValueError("Required core Android CI tasks are absent: " + ", ".join(sorted(missing_core)))
+                        "reason": absent_reason(task, "Linux_android_emu")}
+                       for task in EMULATOR_MODES if task not in configured_emulator
+                       and not any(item["task"] == task and item["suite"] == "emulator" for item in unavailable))
+    embedding = []
+    for suite, configuration in (("java", "linux_unopt"), ("native", "linux_android_emulator")):
+        if policy.engine_enabled(root, configuration):
+            embedding.append({"suite": suite})
+        else:
+            unavailable.append({"task": suite, "suite": "embedding",
+                                "reason": "engine builder is not scheduled by the official CI policy"})
     return {"build": {"include": builds}, "emulator": {"include": emulator},
+            "embedding": {"include": embedding},
             "coverage": {"unavailable": unavailable, "ndk": ndk, "ndk_source": ndk_source,
-                         "selected_builds": builds, "selected_emulator": emulator}}
+                         "selected_builds": builds, "selected_emulator": emulator,
+                         "selected_embedding": embedding}}
 
 
 def write_plan_coverage(root, plan):
@@ -194,7 +198,8 @@ def write_plan_coverage(root, plan):
     (outputs / "android-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
     lines = ["### Android coverage for the selected Flutter ref", "",
              f"Selected: {len(plan['build']['include'])} build checks and "
-             f"{len(plan['emulator']['include'])} emulator configurations.", "",
+             f"{len(plan['emulator']['include'])} emulator configurations and "
+             f"{len(plan['embedding']['include'])} embedding suites.", "",
              "The following reviewed features are unavailable in this ref's CI:", ""]
     lines += [f"- `{item['task']}` ({item['suite']}): {item['reason']}"
               for item in report["unavailable"]]
@@ -301,7 +306,7 @@ class Android:
                 gradle.write_text(original)
 
     def task(self, name, modes):
-        if name not in BUILD_TASKS and name not in EMULATOR_MODES and name not in ADAPTED_TASKS:
+        if name not in BUILD_TASKS and name not in EMULATOR_MODES:
             raise ValueError(f"Unreviewed DeviceLab task: {name}")
         dart = self.root / "bin/cache/dart-sdk/bin/dart"
         lab = self.root / "dev/devicelab"
@@ -314,14 +319,7 @@ class Android:
                        "--results-file", self.outputs / f"{name}.json"]
             if modes:
                 command.append("--use-emulator")
-            env = None
-            if name == "flavors_test" and not self.dry_run:
-                # This task also starts Gradle directly and then drives that
-                # prebuilt APK. The Flutter entrypoint wrapper alone is not
-                # enough to select a source Engine for that part of the test.
-                from golden import maven_repository
-                env = {**os.environ, **maven_repository(self.root, self.outputs / "local-engine-maven")}
-            self.run(command, lab, env)
+            self.run(command, lab)
         finally:
             if modes:
                 self.collect_adb()
@@ -457,9 +455,10 @@ def main():
     if args.command == "plan":
         plan = source_plan(runner.root)
         write_plan_coverage(runner.root, plan)
-        for key in ("build", "emulator"):
+        for key in ("build", "emulator", "embedding"):
             value = plan[key]
-            line = f"{key}={json.dumps(value, separators=(',', ':'))}\n"
+            line = (f"{key}={json.dumps(value, separators=(',', ':'))}\n"
+                    f"has-{key}={str(bool(value['include'])).lower()}\n")
             if "GITHUB_OUTPUT" in os.environ:
                 with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                     output.write(line)

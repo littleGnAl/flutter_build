@@ -15,6 +15,13 @@ spec.loader.exec_module(android)
 
 
 class AndroidConfigurationTest(unittest.TestCase):
+    def policy(self, excluded=(), engine=("linux_unopt", "linux_android_emulator")):
+        return SimpleNamespace(
+            targets=lambda ci: [target for target in ci["targets"] if target["name"] not in excluded],
+            rejection=lambda target, ci: "not scheduled by the official policy" if target["name"] in excluded else None,
+            engine_enabled=lambda root, name: name in engine,
+        )
+
     def old_ref_fixture(self, root):
         """Relevant contract from littleGnAl/flutter@225e8f4 (Flutter 3.35)."""
         (root / ".ci.yaml").write_text("older-ref fixture")
@@ -34,10 +41,21 @@ class AndroidConfigurationTest(unittest.TestCase):
                           "external_textures_integration_test", "native_assets_android"]
         targets += [{"name": f"Linux_android_emu {task}", "properties": {"task_name": task}}
                     for task in emulator_names]
+        # Official physical tasks must not become emulator jobs merely because
+        # their task source and .ci entries exist.
+        physical_tasks = ["channels_integration_test", "integration_ui_driver", "flavors_test"]
         targets += [{"name": f"Linux_mokey {task}", "properties": {"task_name": task}}
-                    for task in android.ADAPTED_TASKS]
-        for task in build_names + emulator_names + list(android.ADAPTED_TASKS):
-            (tasks / f"{task}.dart").touch()
+                    for task in physical_tasks]
+        for task in build_names + emulator_names + physical_tasks:
+            (tasks / f"{task}.dart").write_text("Future<void> main() async { await runTests(); }\n")
+        (tasks / "android_java11_dependency_smoke_tests.dart").write_text('''
+Future<void> main() async {
+  // Empty until removal of the Java 11 CI configuration.
+  await task(() async {
+    return TaskResult.success(null);
+  });
+}
+''')
         return {"targets": targets, "platform_properties": {"linux_android_emu": {"properties": {
             "dependencies": [{"dependency": "android_virtual_device",
                               "version": "android_36_google_apis_x64.textpb"},
@@ -48,15 +66,18 @@ class AndroidConfigurationTest(unittest.TestCase):
             root = Path(directory)
             ci = self.old_ref_fixture(root)
             with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
-                plan = android.source_plan(root)
+                plan = android.source_plan(root, self.policy())
             builds = {item["task"] for item in plan["build"]["include"]}
             self.assertIn("plugin_test", builds)
             self.assertNotIn("plugin_test_android_standard", builds)
-            self.assertEqual(len(builds), 16)
+            self.assertNotIn("android_java11_dependency_smoke_tests", builds)
+            self.assertEqual(len(builds), 15)
             unavailable = {item["task"] for item in plan["coverage"]["unavailable"]}
             self.assertIn("android_java17_build_android_host_app_with_module_aar", unavailable)
             self.assertIn("android_intent_parsing_test", unavailable)
             self.assertEqual(plan["emulator"]["include"][0]["jdk"], "21")
+            self.assertEqual(len(plan["emulator"]["include"]), 5)
+            self.assertTrue(all(not item["id"].endswith("-adapted") for item in plan["emulator"]["include"]))
 
     def test_old_ref_with_groovy_extension_reads_its_ndk(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -67,21 +88,54 @@ class AndroidConfigurationTest(unittest.TestCase):
             extension.parent.mkdir(parents=True)
             extension.write_text("class FlutterExtension { static String ndkVersion = '26.3.11579264' }")
             with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
-                plan = android.source_plan(root)
+                plan = android.source_plan(root, self.policy())
             self.assertEqual(plan["emulator"]["include"][0]["ndk"], "26.3.11579264")
 
-    def test_stale_optional_ci_entry_is_reported_but_missing_core_is_an_error(self):
+    def test_policy_excludes_stale_and_bringup_targets_before_source_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ci = self.old_ref_fixture(root)
-            (root / "dev/devicelab/bin/tasks/hybrid_android_views_integration_test.dart").unlink()
+            (root / "dev/devicelab/bin/tasks/android_views.dart").unlink()
+            excluded = {"Linux plugin_test", "Linux_android_emu android_views"}
             with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
-                plan = android.source_plan(root)
+                plan = android.source_plan(root, self.policy(excluded, engine=("linux_unopt",)))
+                self.assertNotIn("plugin_test", {item["task"] for item in plan["build"]["include"]})
+                self.assertNotIn("android_views", {item["task"] for item in plan["emulator"]["include"]})
+                self.assertEqual(plan["embedding"], {"include": [{"suite": "java"}]})
                 unavailable = {item["task"]: item for item in plan["coverage"]["unavailable"]}
-                self.assertIn("source", unavailable["hybrid_android_views_integration_test"]["reason"])
-                (root / "dev/devicelab/bin/tasks/android_views.dart").unlink()
+                self.assertIn("policy", unavailable["android_views"]["reason"])
+                self.assertIn("policy", unavailable["plugin_test"]["reason"])
+                # A source file missing from an enabled task remains an error.
                 with self.assertRaisesRegex(ValueError, "source file"):
-                    android.source_plan(root)
+                    android.source_plan(root, self.policy())
+
+    def test_empty_official_schedule_returns_empty_matrices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = self.old_ref_fixture(root)
+            excluded = {target["name"] for target in ci["targets"]}
+            with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
+                plan = android.source_plan(root, self.policy(excluded, engine=()))
+            for group in ("build", "emulator", "embedding"):
+                self.assertEqual(plan[group], {"include": []})
+
+    def test_java11_task_is_kept_when_the_target_version_has_real_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = self.old_ref_fixture(root)
+            task = root / "dev/devicelab/bin/tasks/android_java11_dependency_smoke_tests.dart"
+            task.write_text("Future<void> main() async { await runDependencySmokeTests(); }\n")
+            with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
+                plan = android.source_plan(root, self.policy())
+            self.assertIn("android_java11_dependency_smoke_tests",
+                          {item["task"] for item in plan["build"]["include"]})
+
+    def test_only_empty_main_and_unconditional_success_placeholders_are_noops(self):
+        self.assertTrue(android.task_is_noop("Future<void> main() async {}"))
+        self.assertTrue(android.task_is_noop("void main() {/* no cases */}"))
+        self.assertFalse(android.task_is_noop("Future<void> main() async { await test(); }"))
+        self.assertFalse(android.task_is_noop("Future<void> main() async { await task(() async { "
+                                             "await build(); return TaskResult.success(null); }); }"))
 
     def test_old_host_build_uses_ref_sdk_target_and_const_finder(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -204,9 +258,6 @@ class AndroidConfigurationTest(unittest.TestCase):
                 for task in android.BUILD_TASKS]
             for task in android.BUILD_TASKS:
                 (tasks / f"{task}.dart").touch()
-            for task in android.ADAPTED_TASKS:
-                (tasks / f"{task}.dart").touch()
-                targets.append({"name": f"Linux_mokey {task}", "properties": {"task_name": task}})
             targets.append({"name": "Linux_android_emu android views", "properties": {
                 "task_name": "android_views", "dependencies": [{"dependency": "goldctl", "version": "v1"}]}})
             (tasks / "android_views.dart").touch()
@@ -215,12 +266,12 @@ class AndroidConfigurationTest(unittest.TestCase):
                                   "version": "android_36_google_apis_x64.textpb"},
                                  {"dependency": "open_jdk", "version": "version:25"}]}}}}
             with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
-                plan = android.source_plan(root)
+                plan = android.source_plan(root, self.policy())
                 self.assertEqual(plan["emulator"]["include"][0]["api"], "36")
                 self.assertEqual(plan["emulator"]["include"][0]["ndk"], "28.2.13676358")
                 targets.append({"name": "Linux_android_emu newly_added", "properties": {"task_name": "newly_added"}})
                 with self.assertRaisesRegex(ValueError, "New Android emulator task"):
-                    android.source_plan(root)
+                    android.source_plan(root, self.policy())
 
 
 class EngineSelectionTest(unittest.TestCase):

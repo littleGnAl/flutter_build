@@ -2,7 +2,6 @@
 """Run Flutter's iOS CI entry points from the selected Flutter checkout."""
 
 import argparse
-from contextlib import contextmanager, nullcontext
 import difflib
 import json
 import os
@@ -10,10 +9,12 @@ from pathlib import Path
 import platform
 import re
 import shlex
-import shutil
 import subprocess
 import sys
-import tempfile
+
+import yaml
+
+from official_ci import Policy
 
 
 BASELINE_TASKS = (
@@ -46,7 +47,6 @@ SIMULATOR_TASKS = (
     "hot_mode_dev_cycle_ios_simulator",
     "external_textures_integration_test_ios",
 )
-CORE_SIMULATOR_TASKS = ("native_assets_ios_simulator", "hot_mode_dev_cycle_ios_simulator")
 
 
 def run(command, *, cwd, log=None, env=None, check=True):
@@ -123,27 +123,19 @@ def find_build(root, kind, extension_safe=False):
     return build
 
 
-def build_engine(root, build, results, jobs, *, app_artifacts=False):
+def build_engine(root, build, results, jobs):
     src = root / "engine/src"
     variant = build["ninja"]["config"]
     flags = local_gn_flags(build["gn"])
-    if app_artifacts:
-        # Flutter's Xcode settings compute the engine src root as ../.. from
-        # the output directory. Nested CI variants would produce a wrong root.
-        original_variant = variant
-        variant = variant.rsplit("/", 1)[-1]
-        flags = [variant if value == original_variant else value for value in flags]
     results.mkdir(parents=True, exist_ok=True)
     (results / (variant.replace("/", "_") + "-build.json")).write_text(
         json.dumps({"variant": variant, "gn": flags,
-                    "targets": build["ninja"]["targets"], "app_artifacts": app_artifacts}, indent=2)
+                    "targets": build["ninja"]["targets"]}, indent=2)
         + "\n"
     )
     run(["./flutter/tools/gn", *flags], cwd=src,
         log=results / (variant.replace("/", "_") + "-gn.log"))
     targets = build["ninja"]["targets"]
-    if app_artifacts and "default" not in targets:
-        targets = [*targets, "default"]
     run(["ninja", "-j", str(jobs), "-C", "out/" + variant, *targets],
         cwd=src, log=results / (variant.replace("/", "_") + "-ninja.log"))
     return variant
@@ -204,8 +196,14 @@ def save_patch(root, path, old, new, results, label):
     path.write_text(new)
 
 
-def run_native(root, results, jobs, extension_safe):
+def run_native(root, results, jobs, extension_safe, policy=None):
+    policy = policy or Policy.load(root)
+    if not policy.engine_enabled(root, "mac_unopt"):
+        raise ValueError("The selected official CI does not schedule mac_unopt")
     build = find_build(root, "ios", extension_safe)
+    suites = native_suites(build, policy)
+    if not suites:
+        raise ValueError("The selected official CI schedules no tests for this iOS variant")
     runtime_document = json.loads(subprocess.check_output(
         ["xcrun", "simctl", "list", "runtimes", "--json"], text=True
     ))
@@ -216,102 +214,147 @@ def run_native(root, results, jobs, extension_safe):
     (results / "simulator-runtime.json").write_text(json.dumps(
         {"scenario": runtime, "embedding": embedding_runtime}, indent=2
     ) + "\n")
-    variant = build_engine(root, build, results, jobs)
+    build_engine(root, build, results, jobs)
     src = root / "engine/src"
-    # Run both suites even when the first suite fails.
-    embedding_runner = src / "flutter/testing/run_tests.py"
-    embedding_original = embedding_runner.read_text()
-    embedding_patched, runtime_options = embedding_runtime_options(
-        embedding_original, embedding_runtime["identifier"]
-    )
-    save_patch(root, embedding_runner, embedding_original, embedding_patched, results, "embedding-runner")
-    try:
-        statuses = {"embedding": run([
-            "python3", "flutter/testing/run_tests.py", "--variant", variant,
-            "--type", "objc", "--ios-variant", variant, *runtime_options,
-        ], cwd=src, log=results / "embedding.log", check=False)}
-    finally:
-        if embedding_patched != embedding_original:
-            embedding_runner.write_text(embedding_original)
-    runner = src / "flutter/testing/ios_scenario_app/bin/run_ios_tests.dart"
-    old = runner.read_text()
-    new = patch_scenario_text(old)
-    if "addOption(" not in new or "'os-runtime'" not in new or "'os-version'" not in new:
-        raise ValueError("This ref's Scenario runner does not support runtime selection")
-    scenario_shell = src / "flutter/testing/ios_scenario_app/run_ios_tests.sh"
-    scenario_cwd = scenario_working_directory(src, scenario_shell.read_text())
-    save_patch(root, runner, old, new, results, "scenario-runner")
-    try:
-        statuses["scenario"] = run([
-            str(scenario_shell), variant,
-            "--os-runtime=" + runtime["identifier"],
-            "--os-version=" + runtime["version"],
-            "--dump-xcresult-on-failure=" + str(results),
-        ], cwd=scenario_cwd, log=results / "scenario.log", check=False)
-    finally:
-        runner.write_text(old)
+    statuses = {}
+    # Preserve the official test selection and run the remaining suite after a failure.
+    if "embedding" in suites:
+        embedding_runner = src / "flutter/testing/run_tests.py"
+        embedding_original = embedding_runner.read_text()
+        embedding_patched, runtime_options = embedding_runtime_options(
+            embedding_original, embedding_runtime["identifier"]
+        )
+        save_patch(root, embedding_runner, embedding_original, embedding_patched, results, "embedding-runner")
+        try:
+            statuses["embedding"] = run([
+                "python3", "flutter/testing/run_tests.py", *suites["embedding"]["parameters"],
+                *runtime_options,
+            ], cwd=src, log=results / "embedding.log", check=False)
+        finally:
+            if embedding_patched != embedding_original:
+                embedding_runner.write_text(embedding_original)
+    if "scenario" in suites:
+        runner = src / "flutter/testing/ios_scenario_app/bin/run_ios_tests.dart"
+        old = runner.read_text()
+        new = patch_scenario_text(old)
+        if "addOption(" not in new or "'os-runtime'" not in new or "'os-version'" not in new:
+            raise ValueError("This ref's Scenario runner does not support runtime selection")
+        scenario_shell = src / "flutter/testing/ios_scenario_app/run_ios_tests.sh"
+        scenario_cwd = scenario_working_directory(src, scenario_shell.read_text())
+        save_patch(root, runner, old, new, results, "scenario-runner")
+        try:
+            statuses["scenario"] = run([
+                str(scenario_shell), *suites["scenario"]["parameters"],
+                "--os-runtime=" + runtime["identifier"],
+                "--os-version=" + runtime["version"],
+                "--dump-xcresult-on-failure=" + str(results),
+            ], cwd=scenario_cwd, log=results / "scenario.log", check=False)
+        finally:
+            runner.write_text(old)
     (results / "results.json").write_text(json.dumps(statuses, indent=2) + "\n")
     return int(any(statuses.values()))
 
 
-def task_is_configured(root, task):
-    # task_name is a scalar everywhere in .ci.yaml; no general YAML parser is
-    # needed for this membership check.
-    config = (root / ".ci.yaml").read_text()
-    return bool(re.search(r"^\s+task_name:\s*[\"']?" + re.escape(task) + r"[\"']?\s*$", config, re.MULTILINE))
+def read_configuration(root):
+    return yaml.safe_load((root / ".ci.yaml").read_text())
 
 
-def task_unavailability(root, task, *, simulator=False):
-    source = root / "dev/devicelab/bin/tasks" / (task + ".dart")
-    if not source.is_file():
-        return "task_file_absent"
-    if not task_is_configured(root, task):
-        return "not_configured_in_ci"
-    if simulator and "testWithNewIOSSimulator" not in source.read_text():
-        return "requires_physical_device_in_this_ref"
-    return None
+def target_runner(configuration, target):
+    """Honor the official target CPU; an unconstrained Mac can use arm64."""
+    prefix = target["name"].split()[0].lower()
+    properties = {**configuration.get("platform_properties", {}).get(prefix, {}).get("properties", {}),
+                  **target.get("properties", {})}
+    if not prefix.startswith("mac") or properties.get("device_type", "none") != "none":
+        return None
+    cpu = properties.get("cpu", "x86" if prefix == "mac_x64" else "arm64")
+    if cpu == "arm64":
+        return "macos-15", "arm64"
+    if cpu in {"x86", "x64", "x86_64"}:
+        return "macos-15-intel", "x64"
+    raise ValueError(f"Unsupported iOS task CPU for {target['name']}: {cpu}")
 
 
-def simulator_tasks(root, unavailable=None):
-    directory = root / "dev/devicelab/bin/tasks"
-    tasks = []
-    missing = []
-    for task in SIMULATOR_TASKS:
-        reason = task_unavailability(root, task, simulator=True)
-        if reason:
-            missing.append({"task": task, "reason": reason})
-        else:
-            tasks.append(task)
-    for task in CORE_SIMULATOR_TASKS:
-        if task not in tasks:
-            raise ValueError(f"Required core simulator task is unavailable in this ref: {task}")
-    if not tasks:
-        raise ValueError("No configured simulator tasks are available in this ref")
-    # A simulator task can still perform device/profile/release builds inside
-    # its helpers. Require a mode review for upstream additions before passing
-    # a fixed debug local engine; silently guessing would misreport coverage.
-    for source in sorted(directory.glob("*.dart")):
-        if ("testWithNewIOSSimulator" in source.read_text()
-                and source.stem not in tasks and source.stem not in BASELINE_TASKS
-                and task_is_configured(root, source.stem)):
-            raise ValueError(f"New simulator task requires a build-mode review: {source.stem}")
-    if unavailable is not None:
-        unavailable.extend(missing)
-    return tasks
-
-
-def baseline_tasks(root, unavailable=None):
-    tasks = []
-    for task in BASELINE_TASKS:
-        reason = task_unavailability(root, task)
+def task_entries(root, candidates, *, simulator=False, unavailable=None, policy=None):
+    policy = policy or Policy.load(root)
+    configuration = read_configuration(root)
+    configured = configuration["targets"]
+    selected = policy.targets(configuration)
+    entries = []
+    for task in candidates:
+        source = root / "dev/devicelab/bin/tasks" / (task + ".dart")
+        declared = [target for target in configured
+                    if target.get("properties", {}).get("task_name") == task]
+        targets = [target for target in selected
+                   if target.get("properties", {}).get("task_name") == task]
+        reason = None
+        if not source.is_file():
+            reason = "task_file_absent"
+        elif not declared:
+            reason = "not_configured_in_ci"
+        elif not targets:
+            reason = "; ".join(sorted({policy.rejection(target, configuration) for target in declared}))
+        elif simulator and "testWithNewIOSSimulator" not in source.read_text():
+            reason = "requires_physical_device_in_this_ref"
         if reason:
             if unavailable is not None:
                 unavailable.append({"task": task, "reason": reason})
+            continue
+        hosted = False
+        for target in targets:
+            runner = target_runner(configuration, target)
+            if runner is None:
+                continue
+            hosted = True
+            entries.append({"task": task, "runner": runner[0], "cpu": runner[1],
+                            "source_target": target["name"],
+                            "id": re.sub(r"[^A-Za-z0-9_-]", "-", target["name"])})
+        if not hosted and unavailable is not None:
+            unavailable.append({"task": task, "reason": "requires_physical_device_in_this_ref"})
+    if simulator:
+        scheduled = {target.get("properties", {}).get("task_name") for target in selected}
+        for source in sorted((root / "dev/devicelab/bin/tasks").glob("*.dart")):
+            if (source.stem in scheduled and source.stem not in SIMULATOR_TASKS
+                    and source.stem not in BASELINE_TASKS
+                    and "testWithNewIOSSimulator" in source.read_text()):
+                raise ValueError(f"New simulator task requires a build-mode review: {source.stem}")
+    return entries
+
+
+def simulator_tasks(root, unavailable=None, policy=None):
+    return list(dict.fromkeys(entry["task"] for entry in task_entries(
+        root, SIMULATOR_TASKS, simulator=True, unavailable=unavailable, policy=policy)))
+
+
+def baseline_tasks(root, unavailable=None, policy=None):
+    return list(dict.fromkeys(entry["task"] for entry in task_entries(
+        root, BASELINE_TASKS, unavailable=unavailable, policy=policy)))
+
+
+def native_suites(build, policy):
+    """Use the builder's scheduled suites, including its per-test branch guard."""
+    selected = {}
+    for test in build.get("tests", []):
+        if not re.match(".*" + test.get("test_if", ""), policy.branch):
+            continue
+        script = test.get("script")
+        if script == "flutter/testing/run_tests.py" and "objc" in test.get("parameters", []):
+            selected["embedding"] = test
+        elif script == "flutter/testing/ios_scenario_app/run_ios_tests.sh":
+            selected["scenario"] = test
         else:
-            tasks.append(task)
-    if not tasks:
-        raise ValueError("No configured baseline compatibility tasks are available in this ref")
-    return tasks
+            raise ValueError(f"Unreviewed iOS native test in {build['ninja']['config']}: {script}")
+    return selected
+
+
+def native_matrix(root, policy):
+    if not policy.engine_enabled(root, "mac_unopt"):
+        return {"include": []}
+    entries = []
+    for extension in (False, True):
+        build = find_build(root, "ios", extension)
+        if native_suites(build, policy):
+            entries.append({"variant": "extension-safe" if extension else "normal"})
+    return {"include": entries}
 
 
 def coverage_summary(tasks, unavailable):
@@ -326,143 +369,52 @@ def coverage_summary(tasks, unavailable):
                 output.write("- `" + item["task"] + "`: " + item["reason"] + "\n")
 
 
-def plan_tasks(root, results):
+def plan_tasks(root, results, policy=None):
+    policy = policy or Policy.load(root)
     unavailable = []
-    simulator = simulator_tasks(root, unavailable=unavailable)
-    baseline = baseline_tasks(root, unavailable=unavailable)
-    plan = {"simulator_tasks": simulator, "baseline": {"task": baseline}, "unavailable": unavailable}
+    simulator = task_entries(root, SIMULATOR_TASKS, simulator=True, unavailable=unavailable, policy=policy)
+    baseline = task_entries(root, BASELINE_TASKS, unavailable=unavailable, policy=policy)
+    plan = {"simulator": {"include": simulator}, "baseline": {"include": baseline},
+            "native": native_matrix(root, policy), "unavailable": unavailable}
+    results.mkdir(parents=True, exist_ok=True)
     (results / "ios-plan.json").write_text(json.dumps(plan, indent=2) + "\n")
-    coverage_summary([*simulator, *baseline], unavailable)
-    value = json.dumps(plan["baseline"], separators=(",", ":"))
+    coverage_summary([entry["source_target"] for entry in [*simulator, *baseline]], unavailable)
     if os.environ.get("GITHUB_OUTPUT"):
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-            output.write("baseline=" + value + "\n")
+            for name in ("simulator", "baseline", "native"):
+                output.write(name + "=" + json.dumps(plan[name], separators=(",", ":")) + "\n")
+                output.write("has-" + name + "=" + str(bool(plan[name]["include"])).lower() + "\n")
     print(json.dumps(plan, indent=2))
+    return plan
 
 
-def validate_source_command(arguments, config, environment=None):
-    """Reject an app build that would silently use the wrong local variant."""
-    commands = {"build", "run", "test", "drive", "install", "attach", "assemble"}
-    command = next((argument for argument in arguments if argument in commands), None)
-    if command is None or "--config-only" in arguments:
-        return None
-    explicit = next((mode for mode in ("release", "profile", "debug")
-                     if "--" + mode in arguments or "-dBuildMode=" + mode in arguments), None)
-    default = "release" if command == "build" and "--simulator" not in arguments else "debug"
-    mode = explicit or default
-    if mode != "debug":
-        raise ValueError(f"Source simulator task requested {mode}; only debug simulator artifacts were built")
-    if command == "build" and ("ios" not in arguments or "--simulator" not in arguments):
-        raise ValueError("Source simulator build must explicitly target ios --simulator")
-    environment = os.environ if environment is None else environment
-    sdk = environment.get("SDK_NAME", "")
-    sdk += " ".join(argument for argument in arguments if argument.startswith("-dSdkRoot="))
-    if "iphoneos" in sdk.lower():
-        raise ValueError("Source simulator task requested a physical iOS device SDK")
-    options = {}
-    expected = {
-        "--local-engine-src-path": str(Path(config["root"]) / "engine/src"),
-        "--local-engine": config["ios"],
-        "--local-engine-host": config["host"],
-    }
-    for index, argument in enumerate(arguments):
-        name, separator, value = argument.partition("=")
-        if name in expected:
-            if not separator:
-                value = arguments[index + 1] if index + 1 < len(arguments) else ""
-            options[name] = value
-    if any(options.get(name) != value for name, value in expected.items()):
-        raise ValueError("Source simulator app command did not select the built local host and simulator Engines")
-    return mode
-
-
-@contextmanager
-def source_launcher(root, results, ios, host):
-    binary = root / "bin/flutter"
-    original = root / "bin/flutter.ci-ios-original"
-    configuration = root / "bin/flutter.ci-ios-guard.json"
-    if original.exists():
-        raise ValueError("An iOS source launcher is already installed")
-    config = {"root": str(root), "results": str(results), "ios": ios, "host": host}
-    configuration.write_text(json.dumps(config) + "\n")
-    shutil.copy2(binary, original)
-    old = binary.read_text()
-    wrapper = ("#!/bin/sh\n# FLUTTER_CI_IOS_SOURCE_GUARD\nexec "
-               + shlex.join([sys.executable, str(Path(__file__).resolve()),
-                             "flutter-command", str(configuration)]) + ' "$@"\n')
-    save_patch(root, binary, old, wrapper, results, "source-flutter-launcher")
-    binary.chmod(0o755)
-    try:
-        yield
-    finally:
-        shutil.copy2(original, binary)
-        original.unlink()
-        configuration.unlink()
-
-
-def dispatch_flutter(configuration, arguments):
-    config = json.loads(configuration.read_text())
-    mode = validate_source_command(arguments, config)
-    with (Path(config["results"]) / "source-flutter-commands.jsonl").open("a") as output:
-        output.write(json.dumps({"mode": mode, "arguments": arguments}) + "\n")
-    binary = Path(config["root"]) / "bin/flutter.ci-ios-original"
-    os.execv(str(binary), [str(binary), *arguments])
-
-
-def run_devicelab(root, results, jobs, baseline_task=None):
+def run_devicelab(root, results, task, source_target, *, simulator=False, policy=None):
+    policy = policy or Policy.load(root)
+    candidates = SIMULATOR_TASKS if simulator else BASELINE_TASKS
+    entries = task_entries(root, candidates, simulator=simulator, policy=policy)
+    entry = next((entry for entry in entries
+                  if entry["task"] == task and entry["source_target"] == source_target), None)
+    if entry is None:
+        raise ValueError(f"Task is not scheduled in the selected official CI: {source_target}/{task}")
+    expected_cpu = "arm64" if entry["cpu"] == "arm64" else "x86_64"
+    if sys.platform != "darwin" or platform.machine() != expected_cpu:
+        raise ValueError(f"{source_target} requires macOS/{expected_cpu}")
     directory = root / "dev/devicelab"
     dart = root / "bin/cache/dart-sdk/bin/dart"
     run([dart, "pub", "get"], cwd=directory, log=results / "pub-get.log")
-    flags = []
-    unavailable = []
-    if baseline_task:
-        if baseline_task not in baseline_tasks(root, unavailable=unavailable):
-            raise ValueError(f"Task is not configured in the selected ref: {baseline_task}")
-        tasks = [baseline_task]
-        # These tasks intentionally exercise all build modes/platforms in one
-        # process. A single debug local engine would invalidate their coverage.
-        origin = "selected-framework-and-tools-with-baseline-engine"
-        run([root / "bin/flutter", "precache", "--ios", "--macos"],
-            cwd=root, log=results / "precache.log")
-    else:
-        tasks = simulator_tasks(root, unavailable=unavailable)
-        ios = build_engine(root, find_build(root, "ios"), results, jobs, app_artifacts=True)
-        host = build_engine(root, find_build(root, "host"), results, jobs, app_artifacts=True)
-        flags = ["--local-engine-src-path", str(root / "engine/src"),
-                 "--local-engine", ios, "--local-engine-host", host]
-        origin = "selected-ref-local-host-and-ios-engine"
-    (results / "coverage.json").write_text(json.dumps(
-        {"engine_origin": origin, "tasks": tasks, "local_engine_flags": flags,
-         "unavailable": unavailable}, indent=2
-    ) + "\n")
-    coverage_summary(tasks, unavailable)
-    statuses = {}
-    guard = nullcontext() if baseline_task else source_launcher(root, results, ios, host)
-    with guard:
-        for task in tasks:
-            statuses[task] = run([
-                dart, "bin/test_runner.dart", "test", "--exit", "--task", task,
-                *flags, "--results-file", str(results / (task + "-devicelab.json")),
-            ], cwd=directory, log=results / (task + ".log"), check=False)
-        if not baseline_task:
-            # Exercise a module build with the actual source engine as well as
-            # the full upstream multi-mode compatibility task above.
-            with tempfile.TemporaryDirectory(prefix="flutter-ios-source-module-") as temporary:
-                module = Path(temporary) / "source_module"
-                statuses["source_module_create"] = run([
-                    root / "bin/flutter", "create", "--template=module",
-                    "--project-name=ci_source_module", str(module)
-                ], cwd=root, log=results / "source-module-create.log", check=False)
-                if not statuses["source_module_create"]:
-                    statuses["source_module_build"] = run([
-                        root / "bin/flutter", "build", "ios", "--simulator", "--debug",
-                        "--no-codesign", *flags,
-                    ], cwd=module, log=results / "source-module-build.log", check=False)
-                    generated = module / ".ios/Flutter/Generated.xcconfig"
-                    if generated.is_file():
-                        shutil.copy2(generated, results / "source-module-Generated.xcconfig")
-    (results / "results.json").write_text(json.dumps(statuses, indent=2) + "\n")
-    return int(any(statuses.values()))
+    # Official DeviceLab tasks normally use published Engine artifacts. Keep
+    # their original build modes and CPU instead of injecting a local variant.
+    run([root / "bin/flutter", "precache", "--ios", "--macos"],
+        cwd=root, log=results / "precache.log")
+    (results / "coverage.json").write_text(json.dumps({
+        "engine_origin": "selected-framework-and-tools-with-baseline-engine",
+        "task": task, "source_target": source_target, "cpu": entry["cpu"],
+    }, indent=2) + "\n")
+    code = run([dart, "bin/test_runner.dart", "test", "--exit", "--task", task,
+                "--results-file", str(results / (task + "-devicelab.json"))],
+               cwd=directory, log=results / (task + ".log"), check=False)
+    (results / "results.json").write_text(json.dumps({task: code}, indent=2) + "\n")
+    return int(bool(code))
 
 
 def select_xcode(version):
@@ -511,16 +463,14 @@ def prepare_native_tools(results):
 
 
 def main():
-    if len(sys.argv) > 2 and sys.argv[1] == "flutter-command":
-        dispatch_flutter(Path(sys.argv[2]), sys.argv[3:])
-        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("select-xcode", "native", "simulator", "baseline", "diagnostics", "plan"))
     parser.add_argument("--flutter-root", type=Path, default=Path(os.environ.get("FLUTTER_ROOT", "flutter")))
     parser.add_argument("--results", type=Path, default=Path(os.environ.get("FLUTTER_TEST_OUTPUTS_DIR", "test-results")))
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--extension-safe", action="store_true")
-    parser.add_argument("--task", choices=BASELINE_TASKS)
+    parser.add_argument("--task", choices=(*BASELINE_TASKS, *SIMULATOR_TASKS))
+    parser.add_argument("--source-target")
     parser.add_argument("--xcode-version", default="")
     args = parser.parse_args()
     if args.command == "select-xcode":
@@ -537,13 +487,14 @@ def main():
     os.environ["FLUTTER_TEST_OUTPUTS_DIR"] = str(results)
     if args.jobs < 1:
         parser.error("--jobs must be positive")
-    if args.command in ("native", "simulator"):
+    if args.command == "native":
         prepare_native_tools(results)
     if args.command == "native":
         return run_native(root, results, args.jobs, args.extension_safe)
-    if args.command == "baseline" and not args.task:
-        parser.error("baseline requires --task")
-    return run_devicelab(root, results, args.jobs, args.task)
+    if not args.task or not args.source_target:
+        parser.error("simulator/baseline requires --task and --source-target")
+    return run_devicelab(root, results, args.task, args.source_target,
+                        simulator=args.command == "simulator")
 
 
 if __name__ == "__main__":

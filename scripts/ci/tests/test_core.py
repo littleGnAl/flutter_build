@@ -261,6 +261,12 @@ class GoldenComparisonTest(unittest.TestCase):
 
 
 class GoldenPlanTest(unittest.TestCase):
+    def policy(self, configuration, branch="master", excluded=()):
+        from official_ci import Policy
+        return Policy(branch=branch,
+                      root_targets={target["name"] for target in configuration["targets"]} - set(excluded),
+                      engine_targets=set())
+
     def write_runner(self, root, suites):
         runner = root / "dev/bots/test.dart"
         runner.parent.mkdir(parents=True, exist_ok=True)
@@ -271,6 +277,7 @@ class GoldenPlanTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ci = {
+                "enabled_branches": ["master"],
                 "platform_properties": {"linux_android_emu": {"properties": {
                     "dependencies": json.dumps([{"dependency": "android_virtual_device",
                                                 "version": "android_36_google_apis_x64.textpb"},
@@ -281,17 +288,18 @@ class GoldenPlanTest(unittest.TestCase):
             }
             (root / ".ci.yaml").write_text(yaml.safe_dump(ci))
             self.write_runner(root, golden.SUITES)
-            matrix = golden.source_matrix(root)["include"]
+            matrix = golden.source_matrix(root, policy=self.policy(ci))["include"]
             self.assertEqual(len(matrix), 7)
             self.assertTrue(all(entry["api"] == "36" for entry in matrix))
             self.assertTrue(all(entry["jdk"] == "25" for entry in matrix))
 
-    def test_release_plan_runs_existing_goldens_without_requiring_future_suites(self):
+    def test_release_plan_filters_bringup_and_ignores_unconfigured_future_suites(self):
         import yaml
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             existing = golden.SUITES[:2]
             ci = {
+                "enabled_branches": ["master", r"flutter-\d+\.\d+-candidate\.\d+"],
                 "platform_properties": {"linux_android_emu": {"properties": {
                     "dependencies": json.dumps([{"dependency": "android_virtual_device",
                                                 "version": "android_35_google_apis_x64.textpb"},
@@ -299,12 +307,40 @@ class GoldenPlanTest(unittest.TestCase):
                 "targets": [{"name": "Linux_android_emu " + suite, "properties": {"shard": suite}}
                             for suite in existing],
             }
+            ci["targets"][0]["bringup"] = True
             (root / ".ci.yaml").write_text(yaml.safe_dump(ci))
             self.write_runner(root, existing)
-            self.assertEqual([entry["suite"] for entry in golden.source_matrix(root)["include"]], list(existing))
+            selected = self.policy(ci, branch="flutter-3.35-candidate.0")
+            excluded = []
+            self.assertEqual([entry["suite"] for entry in golden.source_matrix(root, policy=selected, unavailable=excluded)["include"]],
+                             ["android_engine_opengles_tests"])
+            self.assertTrue(any(item["suite"] == "android_engine_vulkan_tests" and "bringup" in item["reason"]
+                                for item in excluded))
             self.write_runner(root, [*existing, golden.SUITES[2]])
-            with self.assertRaisesRegex(ValueError, "official emulator target"):
-                golden.source_matrix(root)
+            self.assertEqual([entry["suite"] for entry in golden.source_matrix(root, policy=selected)["include"]],
+                             ["android_engine_opengles_tests"])
+
+    def test_empty_policy_selection_is_reported_without_scheduling_a_fake_job(self):
+        import io
+        from contextlib import redirect_stdout
+        from official_ci import Policy
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            suite = golden.SUITES[0]
+            ci = {"targets": [{"name": "Linux_android_emu " + suite,
+                               "properties": {"shard": suite}}]}
+            (root / ".ci.yaml").write_text(json.dumps(ci))
+            self.write_runner(root, [suite])
+            selected = self.policy(ci, excluded=[ci["targets"][0]["name"]])
+            stdout = io.StringIO()
+            with patch.object(Policy, "load", return_value=selected), \
+                    patch.object(sys, "argv", ["golden.py", "--plan", "--flutter-root", str(root),
+                                               "--outputs", str(root / "results")]), redirect_stdout(stdout):
+                self.assertEqual(golden.main(), 0)
+            outputs = dict(line.split("=", 1) for line in stdout.getvalue().splitlines())
+            self.assertEqual(outputs["has-tests"], "false")
+            self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
+            self.assertTrue(json.loads((root / "results/plan.json").read_text())["excluded"])
 
     def test_instrumentation_uses_flat_source_engine_paths(self):
         with tempfile.TemporaryDirectory() as directory:
