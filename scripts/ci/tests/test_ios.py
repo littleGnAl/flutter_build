@@ -255,6 +255,96 @@ class IOSCITests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid iOS simulator runtime"):
             ios.embedding_runtime_options("legacy runner", "runtime; arbitrary shell command")
 
+    def test_fstring_embedding_selects_runtime_in_actual_simctl_command(self):
+        # Simulator creation at flutter/flutter@bc9b0371 has no runtime CLI.
+        source = """def run_objc_tests():
+  new_simulator_name = 'IosUnitTestsSimulator'
+  create_simulator = [
+      'xcrun '
+      'simctl '
+      'create '
+      f'{new_simulator_name} com.apple.CoreSimulator.SimDeviceType.iPhone-11'
+  ]
+  run_cmd(create_simulator, shell=True)
+"""
+        runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-2"
+        patched, options = ios.embedding_runtime_options(source, runtime)
+        self.assertEqual(options, [])
+        execute = mock.Mock()
+        namespace = {"run_cmd": execute}
+        exec(compile(patched, "run_tests.py", "exec"), namespace)
+        namespace["run_objc_tests"]()
+        execute.assert_called_once_with([
+            "xcrun simctl create IosUnitTestsSimulator "
+            "com.apple.CoreSimulator.SimDeviceType.iPhone-11 " + runtime,
+        ], shell=True)
+        with self.assertRaisesRegex(ValueError, "unsupported simulator creation"):
+            ios.embedding_runtime_options(source + source, runtime)
+
+    def test_config_only_signing_patch_preserves_real_builds_and_existing_flags(self):
+        source = """await flutter('build', options: <String>['ios', '--release']);
+await flutter('build', options: <String>['ios', '--config-only']);
+await flutter(
+  'build',
+  options: <String>['ios', '--config-only', '-v'],
+  workingDirectory: appDir.path,
+);
+await flutter('build', options: <String>['ios', '--config-only', '--no-codesign']);
+await flutter('run', options: <String>['ios', '--config-only']);
+expect(output, contains('Built build/ios/iphoneos/Runner.app'));
+"""
+        expected = source.replace(
+            "options: <String>['ios', '--config-only']);\nawait flutter(\n",
+            "options: <String>['ios', '--config-only', '--no-codesign']);\nawait flutter(\n",
+        ).replace("['ios', '--config-only', '-v']",
+                  "['ios', '--config-only', '--no-codesign', '-v']")
+        patched = ios.patch_config_only_codesigning(source)
+        self.assertEqual(patched, expected)
+        self.assertEqual(ios.patch_config_only_codesigning(patched), patched)
+
+    def test_module_config_only_patch_is_recorded_and_restored_for_all_outcomes(self):
+        for task in ("module_test_ios", "module_uiscene_test_ios"):
+            for outcome in (0, 9, OSError("runner failed")):
+                with self.subTest(task=task, outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    fixture_335_tasks(root)
+                    simulator = task == "module_uiscene_test_ios"
+                    if simulator:
+                        fixture_module_uiscene_task(root)
+                    task_path = root / "dev/devicelab/bin/tasks" / (task + ".dart")
+                    source = task_path.read_text() + "\nawait flutter('build', options: <String>['ios', '--config-only']);\n"
+                    # Preserve exact source bytes, including line endings.
+                    original = source.replace("\n", "\r\n").encode()
+                    task_path.write_bytes(original)
+                    results = root / "results"
+                    results.mkdir()
+
+                    def execute(command, **kwargs):
+                        if "bin/test_runner.dart" in command:
+                            self.assertIn("['ios', '--config-only', '--no-codesign']", task_path.read_text())
+                            self.assertNotIn("--local-engine", command)
+                            if isinstance(outcome, Exception):
+                                raise outcome
+                            return outcome
+                        self.assertEqual(task_path.read_bytes(), original)
+                        return 0
+
+                    target = ("Mac " if simulator else "Mac_arm64 ") + task
+                    with mock.patch.object(ios.sys, "platform", "darwin"), \
+                            mock.patch.object(ios.platform, "machine", return_value="arm64"), \
+                            mock.patch.object(ios, "run", side_effect=execute):
+                        if isinstance(outcome, Exception):
+                            with self.assertRaisesRegex(OSError, "runner failed"):
+                                ios.run_devicelab(root, results, task, target, simulator=simulator,
+                                                 policy=fixture_policy(root, branch="master"))
+                        else:
+                            self.assertEqual(ios.run_devicelab(root, results, task, target, simulator=simulator,
+                                                              policy=fixture_policy(root, branch="master")),
+                                             int(bool(outcome)))
+                    self.assertEqual(task_path.read_bytes(), original)
+                    patch = (results / (task + "-config-only.patch")).read_text()
+                    self.assertIn("+await flutter('build', options: <String>['ios', '--config-only', '--no-codesign']);", patch)
+
     def test_old_ref_preserves_only_available_official_tasks_and_cpu(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

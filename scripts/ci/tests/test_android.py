@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import sys
 import textwrap
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -337,6 +338,79 @@ Future<void> main() async {
                 targets.append({"name": "Linux_android_emu newly_added", "properties": {"task_name": "newly_added"}})
                 with self.assertRaisesRegex(ValueError, "New Android emulator task"):
                     android.source_plan(root, self.policy())
+
+
+class AndroidDiagnosticsTest(unittest.TestCase):
+    def test_hanging_adb_is_stopped_without_overwriting_live_device_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {"FLUTTER_TEST_OUTPUTS_DIR": str(root / "results")}):
+                runner = android.Android(root)
+            adb = root / "adb"
+            adb.write_text(f"#!{sys.executable}\nprint('live emulator log')\n")
+            adb.chmod(0o755)
+            with mock.patch.object(android.shutil, "which", return_value=str(adb)):
+                runner.collect_adb()
+                adb.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+                started = time.monotonic()
+                runner.collect_adb(timeout=0.2)
+            self.assertLess(time.monotonic() - started, 5)
+            log = (runner.outputs / "logcat.txt").read_text()
+            self.assertIn("live emulator log", log)
+            self.assertIn("timed out after 0.2 seconds", log)
+
+    def test_logcat_timeout_preserves_test_failure_and_wrapper_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {"FLUTTER_TEST_OUTPUTS_DIR": str(root / "results")}):
+                runner = android.Android(root)
+            runner.outputs.mkdir()
+            log = runner.outputs / "logcat.txt"
+            log.write_text("logcat captured while the emulator was running\n")
+            failure = subprocess.CalledProcessError(7, ["dart", "bin/run.dart"])
+            with mock.patch.object(runner, "run", side_effect=[None, failure]), \
+                    mock.patch.object(runner, "install_wrapper"), \
+                    mock.patch.object(runner, "restore_wrapper") as restore, \
+                    mock.patch.object(android.shutil, "which", return_value="/usr/bin/adb"), \
+                    mock.patch.object(android.subprocess, "run", side_effect=subprocess.TimeoutExpired("adb", 30)) as adb:
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    runner.task("android_display_cutout", ["debug"])
+            self.assertIs(error.exception, failure)
+            restore.assert_called_once_with()
+            self.assertEqual(adb.call_args.kwargs["timeout"], 30)
+            self.assertIn("logcat captured while the emulator was running", log.read_text())
+            self.assertIn("timed out", log.read_text())
+
+    def test_collect_adb_cli_preserves_golden_log_path_and_handles_no_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adb = root / "adb"
+            adb.write_text(f"#!{sys.executable}\nimport sys\nprint('no devices/emulators found')\nsys.exit(1)\n")
+            adb.chmod(0o755)
+            output = root / "results"
+            env = {**os.environ, "PATH": str(root), "FLUTTER_TEST_OUTPUTS_DIR": str(output)}
+            completed = subprocess.run([sys.executable, str(Path(android.__file__)),
+                                        "--flutter-root", str(root), "collect-adb", "--log-name", "logcat.log"],
+                                       env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            log = (output / "logcat.log").read_text()
+            self.assertIn("no devices/emulators found", log)
+            self.assertIn("exited with status 1", log)
+            self.assertFalse((output / "logcat.txt").exists())
+
+    def test_missing_adb_and_spawn_failure_are_best_effort(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {"FLUTTER_TEST_OUTPUTS_DIR": str(root / "results")}):
+                runner = android.Android(root)
+            with mock.patch.object(android.shutil, "which", return_value=None), \
+                    mock.patch.object(android.subprocess, "run") as adb:
+                runner.collect_adb()
+            adb.assert_not_called()
+            self.assertIn("adb is unavailable", (runner.outputs / "logcat.txt").read_text())
+            with mock.patch.object(android.shutil, "which", return_value="/missing/adb"), \
+                    mock.patch.object(android.subprocess, "run", side_effect=FileNotFoundError("adb removed")):
+                runner.collect_adb()
 
 
 class EngineSelectionTest(unittest.TestCase):

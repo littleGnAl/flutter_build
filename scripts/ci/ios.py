@@ -164,17 +164,28 @@ def patch_scenario_text(content):
 def embedding_runtime_options(content, runtime):
     if re.search(r"add_argument\(\s*['\"]--ios-runtime['\"]", content):
         return content, ["--ios-runtime", runtime]
-    # Flutter 3.35's runner has no runtime CLI option. Its shell command must
-    # receive the selected runtime explicitly rather than simctl's default.
+    # Older runners use either %-formatting or an f-string without a runtime
+    # CLI option. Give their simctl command the selected runtime explicitly.
     if not re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-\d+(?:-\d+)*", runtime):
         raise ValueError(f"Invalid iOS simulator runtime identifier: {runtime!r}")
-    legacy = "'%s com.apple.CoreSimulator.SimDeviceType.iPhone-11' % new_simulator_name"
-    if content.count(legacy) != 1:
+    expressions = (
+        "'%s com.apple.CoreSimulator.SimDeviceType.iPhone-11' % new_simulator_name",
+        "f'{new_simulator_name} com.apple.CoreSimulator.SimDeviceType.iPhone-11'",
+    )
+    if sum(content.count(expression) for expression in expressions) != 1:
         raise ValueError("This ref's embedding runner has an unsupported simulator creation command")
-    selected = "'%s com.apple.CoreSimulator.SimDeviceType.iPhone-11 " + runtime + "' % new_simulator_name"
-    patched = content.replace(legacy, selected, 1)
+    expression = next(expression for expression in expressions if expression in content)
+    selected = expression.replace("iPhone-11'", "iPhone-11 " + runtime + "'", 1)
+    patched = content.replace(expression, selected, 1)
     compile(patched, "run_tests.py", "exec")
     return patched, []
+
+
+def patch_config_only_codesigning(content):
+    # These module setup commands only generate Xcode configuration. Keep the
+    # subsequent builds and tests intact, including their modes and assertions.
+    command = r"(flutter\(\s*'build',\s*options: <String>\['ios', '--config-only')(, '-v')?\]"
+    return re.sub(command, lambda match: match[1] + ", '--no-codesign'" + (match[2] or "") + "]", content)
 
 
 def scenario_working_directory(src, shell):
@@ -411,9 +422,23 @@ def run_devicelab(root, results, task, source_target, *, simulator=False, policy
         "engine_origin": "selected-framework-and-tools-with-baseline-engine",
         "task": task, "source_target": source_target, "cpu": entry["cpu"],
     }, indent=2) + "\n")
-    code = run([dart, "bin/test_runner.dart", "test", "--exit", "--task", task,
-                "--results-file", str(results / (task + "-devicelab.json"))],
-               cwd=directory, log=results / (task + ".log"), check=False)
+    task_source = directory / "bin/tasks" / (task + ".dart")
+    original = None
+    if task in {"module_test_ios", "module_uiscene_test_ios"}:
+        original = task_source.read_bytes()
+        content = original.decode("utf-8")
+        patched = patch_config_only_codesigning(content)
+        if patched == content:
+            original = None
+    try:
+        if original is not None:
+            save_patch(root, task_source, content, patched, results, task + "-config-only")
+        code = run([dart, "bin/test_runner.dart", "test", "--exit", "--task", task,
+                    "--results-file", str(results / (task + "-devicelab.json"))],
+                   cwd=directory, log=results / (task + ".log"), check=False)
+    finally:
+        if original is not None:
+            task_source.write_bytes(original)
     (results / "results.json").write_text(json.dumps({task: code}, indent=2) + "\n")
     return int(bool(code))
 

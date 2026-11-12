@@ -126,8 +126,7 @@ jobs:
       - name: Collect Android diagnostics
         if: always()
         run: |
-          mkdir -p test-results
-          if command -v adb >/dev/null; then adb logcat -d > test-results/logcat.txt 2>&1 || true; fi
+          python scripts/ci/android.py collect-adb
           find flutter/engine/src/out -path '*/robolectric_tests/build/reports' -type d -exec cp -R {} test-results/ \; 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
@@ -242,8 +241,7 @@ jobs:
       - name: Collect diagnostics
         if: always()
         run: |
-          mkdir -p test-results
-          if command -v adb >/dev/null; then adb logcat -d > test-results/logcat.txt 2>&1 || true; fi
+          python scripts/ci/android.py collect-adb
           python scripts/ci/android.py restore-flutter-wrapper
       - uses: actions/upload-artifact@v4
         if: always()

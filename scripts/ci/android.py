@@ -364,12 +364,32 @@ class Android:
                 self.collect_adb()
                 self.restore_wrapper()
 
-    def collect_adb(self):
-        if not self.dry_run and shutil.which("adb"):
+    def collect_adb(self, log_name="logcat.txt", timeout=30):
+        """Collect bounded, best-effort diagnostics without replacing test results."""
+        if self.dry_run:
+            return
+        try:
             self.outputs.mkdir(parents=True, exist_ok=True)
-            with (self.outputs / "logcat.txt").open("w") as output:
-                subprocess.run(["adb", "logcat", "-d"], stdout=output,
-                               stderr=subprocess.STDOUT, check=False)
+            # The emulator action stops its device before workflow cleanup.
+            # Preserve logs already captured while that device was still alive.
+            with (self.outputs / log_name).open("a") as output:
+                adb = shutil.which("adb")
+                if not adb:
+                    output.write("\nLogcat collection skipped: adb is unavailable.\n")
+                    return
+                output.write("\nCollecting adb logcat -d\n")
+                output.flush()
+                try:
+                    result = subprocess.run([adb, "logcat", "-d"], stdout=output,
+                                            stderr=subprocess.STDOUT, check=False, timeout=timeout)
+                    if result.returncode:
+                        output.write(f"\nLogcat collection exited with status {result.returncode}.\n")
+                except subprocess.TimeoutExpired:
+                    message = f"Logcat collection timed out after {timeout} seconds."
+                    output.write("\n" + message + "\n")
+                    print("::warning::" + message, flush=True)
+        except OSError as error:
+            print(f"::warning::Unable to collect logcat: {error}", flush=True)
 
     def install_wrapper(self, modes):
         binary = self.root / "bin/flutter"
@@ -482,6 +502,8 @@ def main():
     wrapper = sub.add_parser("install-flutter-wrapper")
     wrapper.add_argument("--modes", required=True)
     sub.add_parser("restore-flutter-wrapper")
+    diagnostics = sub.add_parser("collect-adb")
+    diagnostics.add_argument("--log-name", choices=("logcat.txt", "logcat.log"), default="logcat.txt")
     validate = sub.add_parser("validate-app")
     validate.add_argument("--modes", required=True)
     task = sub.add_parser("task")
@@ -525,6 +547,8 @@ def main():
         runner.install_wrapper(args.modes.split(","))
     elif args.command == "restore-flutter-wrapper":
         runner.restore_wrapper()
+    elif args.command == "collect-adb":
+        runner.collect_adb(args.log_name)
     elif args.command == "validate-app":
         runner.validate_app(args.modes.split(","))
     elif args.command == "task":

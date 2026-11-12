@@ -122,9 +122,7 @@ jobs:
           script: python3 scripts/ci/golden.py --suite ${{ matrix.suite }}
       - name: Capture logcat
         if: always()
-        run: |
-          mkdir -p test-results
-          adb logcat -d > test-results/logcat.log 2>&1 || true
+        run: python3 scripts/ci/android.py collect-adb --log-name logcat.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
