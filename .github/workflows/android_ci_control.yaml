@@ -1,0 +1,48 @@
+name: Request Android verification
+on:
+  push:
+    branches: [littlegnal/fix-flutter-ci-bootstrap]
+    paths: [.github/workflows/android_ci_control.yaml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      OPERATION: dispatch
+      TARGET_RUN_ID: '0'
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const branch = 'littlegnal/fix-flutter-ci-bootstrap';
+            if (context.ref !== `refs/heads/${branch}`) {
+              throw new Error('Android verification control is restricted to the repair branch');
+            }
+            if (process.env.OPERATION === 'cancel') {
+              const run_id = Number(process.env.TARGET_RUN_ID);
+              if (!Number.isSafeInteger(run_id) || run_id <= 0) {
+                throw new Error('A specific Android run ID is required');
+              }
+              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id});
+              if (run.head_branch !== branch || run.path !== '.github/workflows/test_all.yaml' ||
+                  !run.display_title.startsWith('Flutter android tests')) {
+                throw new Error('Refusing to cancel an unrelated workflow run');
+              }
+              if (run.status !== 'completed') {
+                await github.rest.actions.cancelWorkflowRun({...context.repo, run_id});
+              }
+              core.info(`Requested cancellation of Android run ${run_id}`);
+            } else if (process.env.OPERATION === 'dispatch') {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: 'test_all.yaml',
+                ref: branch,
+                inputs: {test_suite: 'android', flutter_repo: 'littleGnAl/flutter', flutter_ref: 'master'}
+              });
+              core.info('Dispatched Android full verification against master');
+            } else {
+              throw new Error('Unsupported Android verification operation');
+            }
