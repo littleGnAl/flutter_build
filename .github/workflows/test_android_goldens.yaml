@@ -108,21 +108,14 @@ jobs:
           java-version: ${{ matrix.jdk }}
       - name: Select the official task's JDK
         run: flutter config --jdk-dir "$JAVA_HOME"
-      - name: Generate baseline and compare the target revision
-        uses: reactivecircus/android-emulator-runner@v2
+      - uses: ./.github/actions/setup-official-avd
         with:
-          api-level: ${{ matrix.api }}
-          target: ${{ matrix.target }}
-          arch: ${{ matrix.arch }}
-          profile: pixel_2
-          disable-animations: true
-          disable-linux-hw-accel: false
-          pre-emulator-launch-script: '"$ANDROID_HOME/emulator/emulator" -accel-check'
-          emulator-options: -accel on -no-window -no-audio -no-snapshot -gpu swiftshader -camera-back none -camera-front none -feature Vulkan
-          script: python3 scripts/ci/golden.py --suite ${{ matrix.suite }}
-      - name: Capture logcat
-        if: always()
-        run: python3 scripts/ci/android.py collect-adb --log-name logcat.log
+          config: ${{ matrix.avd_config }}
+          version: ${{ matrix.avd_cipd_version }}
+      - name: Generate baseline and compare the target revision
+        env:
+          GOLDEN_SUITE: ${{ matrix.suite }}
+        run: python3 scripts/ci/golden.py --suite "$GOLDEN_SUITE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

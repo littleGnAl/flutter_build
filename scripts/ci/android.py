@@ -65,6 +65,16 @@ def avd_configuration(version):
     return {"api": sdk_version, "target": match[2], "arch": "x86_64"}
 
 
+def avd_dependencies(properties, platform_properties):
+    config = (dependency(properties, "android_virtual_device")
+              or dependency(platform_properties, "android_virtual_device"))
+    version = (dependency(properties, "avd_cipd_version")
+               or dependency(platform_properties, "avd_cipd_version"))
+    if not version:
+        raise ValueError("Official AVD dependency has no avd_cipd_version pin")
+    return {**avd_configuration(config), "avd_config": config, "avd_cipd_version": version}
+
+
 def local_gn(arguments):
     """Keep source flags except remote execution; never use a Google RBE server."""
     result = [arg for arg in arguments if not re.match(r"--(?:no-)?(?:rbe|goma)(?:=|$)", arg)]
@@ -283,9 +293,7 @@ def source_plan(root, policy=None):
             unavailable.append({"task": task, "suite": "emulator",
                                 "reason": "official task is a no-op placeholder"})
             continue
-        avd_version = (dependency(target.get("properties", {}), "android_virtual_device")
-                       or dependency(platforms[platform]["properties"], "android_virtual_device"))
-        avd = avd_configuration(avd_version)
+        avd = avd_dependencies(target.get("properties", {}), platforms[platform]["properties"])
         emulator.append({"task": task, "id": f"{task}-{platform}",
                          "modes": ",".join(EMULATOR_MODES[task]), "ndk": ndk,
                          "jdk": jdk(target, platform), **avd})

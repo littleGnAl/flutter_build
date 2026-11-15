@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -208,6 +209,9 @@ class GoldenComparisonTest(unittest.TestCase):
         self.environ = patch.dict(os.environ, {"FLUTTER_BASELINE_SHA": "b" * 40, "UPDATE_GOLDENS": "true"})
         self.environ.start()
         self.runner = golden.Golden(self.root, self.outputs, "android_engine_vulkan_tests")
+        self.avd_session = patch("official_avd.session", side_effect=lambda outputs: nullcontext())
+        self.avd_session.start()
+        self.addCleanup(self.avd_session.stop)
         self.driver = self.runner.project / "test_driver"
         self.driver.mkdir(parents=True)
         comparator = self.root / "dev/tools/android_driver_extensions/lib/src/goldens.dart"
@@ -242,6 +246,29 @@ class GoldenComparisonTest(unittest.TestCase):
         self.runner.baseline_images = lambda: None
         with self.assertRaisesRegex(ValueError, "no reference screenshots"):
             self.runner.execute()
+
+    def test_emulator_starts_after_baseline_build_and_stops_on_test_failure(self):
+        events = []
+
+        @contextmanager
+        def session(outputs):
+            self.assertEqual(self.commands, [("checkout", "b" * 40)])
+            events.append("start")
+            try:
+                yield
+            finally:
+                events.append("stop")
+
+        def fail():
+            self.assertEqual(events, ["start"])
+            raise subprocess.CalledProcessError(7, ["official-baseline-test"])
+
+        self.runner.baseline_images = fail
+        with patch("official_avd.session", side_effect=session):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                self.runner.execute()
+        self.assertEqual(failure.exception.returncode, 7)
+        self.assertEqual(events, ["start", "stop"])
 
     def test_mutated_reference_image_is_rejected(self):
         def run(command, **kwargs):
@@ -281,6 +308,7 @@ class GoldenPlanTest(unittest.TestCase):
                 "platform_properties": {"linux_android_emu": {"properties": {
                     "dependencies": json.dumps([{"dependency": "android_virtual_device",
                                                 "version": "android_36_google_apis_x64.textpb"},
+                                               {"dependency": "avd_cipd_version", "version": "build_id:12345"},
                                                {"dependency": "open_jdk", "version": "version:21"}])}}},
                 "targets": [{"name": "Linux_android_emu " + suite, "properties": {
                     "shard": suite, "dependencies": json.dumps([{"dependency": "open_jdk", "version": "version:25"}])}}
@@ -292,6 +320,13 @@ class GoldenPlanTest(unittest.TestCase):
             self.assertEqual(len(matrix), 7)
             self.assertTrue(all(entry["api"] == "36" for entry in matrix))
             self.assertTrue(all(entry["jdk"] == "25" for entry in matrix))
+            self.assertTrue(all(entry["avd_config"] == "android_36_google_apis_x64.textpb" for entry in matrix))
+            self.assertTrue(all(entry["avd_cipd_version"] == "build_id:12345" for entry in matrix))
+            ci["targets"][0]["properties"]["dependencies"] = json.dumps([
+                {"dependency": "avd_cipd_version", "version": "build_id:67890"}])
+            (root / ".ci.yaml").write_text(yaml.safe_dump(ci))
+            matrix = golden.source_matrix(root, policy=self.policy(ci))["include"]
+            self.assertEqual(matrix[0]["avd_cipd_version"], "build_id:67890")
 
     def test_release_plan_filters_bringup_and_ignores_unconfigured_future_suites(self):
         import yaml
@@ -303,6 +338,7 @@ class GoldenPlanTest(unittest.TestCase):
                 "platform_properties": {"linux_android_emu": {"properties": {
                     "dependencies": json.dumps([{"dependency": "android_virtual_device",
                                                 "version": "android_35_google_apis_x64.textpb"},
+                                               {"dependency": "avd_cipd_version", "version": "build_id:12345"},
                                                {"dependency": "open_jdk", "version": "version:21"}])}}},
                 "targets": [{"name": "Linux_android_emu " + suite, "properties": {"shard": suite}}
                             for suite in existing],

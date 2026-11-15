@@ -125,7 +125,27 @@ Future<void> main() async {
         return {"targets": targets, "platform_properties": {"linux_android_emu": {"properties": {
             "dependencies": [{"dependency": "android_virtual_device",
                               "version": "android_36_google_apis_x64.textpb"},
+                             {"dependency": "avd_cipd_version", "version": "build_id:12345"},
                              {"dependency": "open_jdk", "version": "version:21"}]}}}}
+
+    def test_emulator_plan_preserves_official_avd_pin_and_target_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = self.old_ref_fixture(root)
+            target = next(t for t in ci["targets"] if t["name"] == "Linux_android_emu android_views")
+            target["properties"]["dependencies"] = [
+                {"dependency": "avd_cipd_version", "version": "build_id:67890"}]
+            with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
+                entries = android.source_plan(root, self.policy())["emulator"]["include"]
+            by_task = {item["task"]: item for item in entries}
+            self.assertEqual(by_task["android_views"]["avd_cipd_version"], "build_id:67890")
+            self.assertEqual(by_task["android_defines_test"]["avd_cipd_version"], "build_id:12345")
+            self.assertEqual(by_task["android_views"]["avd_config"], "android_36_google_apis_x64.textpb")
+            target["properties"]["dependencies"] = []
+            ci["platform_properties"]["linux_android_emu"]["properties"]["dependencies"].pop(1)
+            with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
+                with self.assertRaisesRegex(ValueError, "AVD.*pin"):
+                    android.source_plan(root, self.policy())
 
     def test_old_ref_plan_uses_available_ci_tasks_and_reports_future_features(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -330,6 +350,7 @@ Future<void> main() async {
             ci = {"targets": targets, "platform_properties": {"linux_android_emu": {"properties": {
                 "dependencies": [{"dependency": "android_virtual_device",
                                   "version": "android_36_google_apis_x64.textpb"},
+                                 {"dependency": "avd_cipd_version", "version": "build_id:12345"},
                                  {"dependency": "open_jdk", "version": "version:25"}]}}}}
             with mock.patch.dict("sys.modules", {"yaml": SimpleNamespace(safe_load=lambda _: ci)}):
                 plan = android.source_plan(root, self.policy())

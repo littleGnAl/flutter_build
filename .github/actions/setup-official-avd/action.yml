@@ -1,0 +1,25 @@
+name: Set up the official Android AVD
+description: Install the Chromium AVD package pinned by the selected Flutter CI target.
+inputs:
+  config:
+    description: android_virtual_device dependency from the target CI configuration
+    required: true
+  version:
+    description: avd_cipd_version dependency from the target CI configuration
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Ensure public Depot Tools are available
+      shell: bash
+      run: |
+        if ! command -v cipd >/dev/null || ! command -v vpython3 >/dev/null; then
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/avd-depot-tools"
+          echo "$RUNNER_TEMP/avd-depot-tools" >> "$GITHUB_PATH"
+        fi
+    - name: Install the target CI's archived AVD
+      shell: bash
+      env:
+        AVD_CONFIG_INPUT: ${{ inputs.config }}
+        AVD_VERSION_INPUT: ${{ inputs.version }}
+      run: python3 scripts/ci/official_avd.py install --config "$AVD_CONFIG_INPUT" --version "$AVD_VERSION_INPUT"

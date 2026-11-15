@@ -21,10 +21,12 @@ def kvm_steps():
 
 
 class KvmAccessTest(unittest.TestCase):
-    def test_emulators_require_hardware_acceleration(self):
+    def test_embedding_emulator_requires_hardware_acceleration(self):
         options = [line for workflow in WORKFLOWS for line in workflow.read_text().splitlines()
                    if "emulator-options:" in line]
-        self.assertEqual(len(options), 3)
+        # Functional and golden jobs now use the pinned Chromium launcher;
+        # test_official_avd exercises its failing acceleration check directly.
+        self.assertEqual(len(options), 1)
         for line in options:
             self.assertIn("-accel on", line)
             self.assertNotIn("-accel off", line)

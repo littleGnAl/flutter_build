@@ -2,6 +2,7 @@
 """Compare Android screenshots with a separately built official merge-base."""
 from __future__ import annotations
 import argparse
+from contextlib import ExitStack
 import difflib
 import hashlib
 import json
@@ -47,7 +48,7 @@ def capture_actuals(source):
 
 def source_matrix(root, policy=None, unavailable=None):
     import yaml
-    from android import avd_configuration, dependency
+    from android import avd_dependencies, dependency
     if policy is None:
         from official_ci import Policy
         policy = Policy.load(root)
@@ -76,9 +77,7 @@ def source_matrix(root, policy=None, unavailable=None):
             raise ValueError(f"Official emulator target has no registered runner for {suite}")
         platform = target["name"].split()[0].lower()
         platform_props = ci["platform_properties"][platform]["properties"]
-        avd_version = (dependency(target["properties"], "android_virtual_device")
-                       or dependency(platform_props, "android_virtual_device"))
-        avd = avd_configuration(avd_version)
+        avd = avd_dependencies(target["properties"], platform_props)
         jdk = dependency(target["properties"], "open_jdk") or dependency(platform_props, "open_jdk")
         if not jdk or not jdk.startswith("version:"):
             raise ValueError(f"No supported JDK dependency for {suite}")
@@ -200,10 +199,11 @@ class Golden:
 
     def execute(self):
         from android import monitor_android
-        with monitor_android(self.outputs):
-            return self._execute()
+        with ExitStack() as contexts, monitor_android(self.outputs):
+            return self._execute(contexts)
 
-    def _execute(self):
+    def _execute(self, contexts):
+        from official_avd import session
         captured = self.outputs / "baseline-images"
         statuses = {}
         metadata = {"suite": self.suite, "target_sha": self.source, "baseline_sha": self.baseline,
@@ -211,6 +211,7 @@ class Golden:
                     "golden_policy": "same emulator; update enabled only on official baseline"}
         try:
             self.checkout(self.baseline)
+            contexts.enter_context(session(self.outputs / "avd"))
             self.baseline_images()
             directory = self.project / "test_driver"
             inventory = golden_inventory(directory)

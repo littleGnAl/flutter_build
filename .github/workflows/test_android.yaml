@@ -223,27 +223,22 @@ jobs:
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm
           test -w /dev/kvm
+      - name: Install the task's Android NDK
+        env:
+          NDK_VERSION: ${{ matrix.ndk }}
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"'
+      - uses: ./.github/actions/setup-official-avd
+        with:
+          config: ${{ matrix.avd_config }}
+          version: ${{ matrix.avd_cipd_version }}
       - name: Run functional task with matching source engines
-        uses: reactivecircus/android-emulator-runner@v2
         env:
           TASK_NAME: ${{ matrix.task }}
           ENGINE_MODES: ${{ matrix.modes }}
-        with:
-          api-level: ${{ matrix.api }}
-          target: ${{ matrix.target }}
-          arch: ${{ matrix.arch }}
-          profile: pixel_2
-          ndk: ${{ matrix.ndk }}
-          cores: 2
-          ram-size: 2048M
-          disable-linux-hw-accel: false
-          emulator-options: -accel on -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
-          script: python scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
-      - name: Collect diagnostics
+        run: python3 scripts/ci/official_avd.py run -- python3 scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
+      - name: Restore the Flutter wrapper
         if: always()
-        run: |
-          python scripts/ci/android.py collect-adb
-          python scripts/ci/android.py restore-flutter-wrapper
+        run: python3 scripts/ci/android.py restore-flutter-wrapper
       - uses: actions/upload-artifact@v4
         if: always()
         with:
