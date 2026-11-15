@@ -1,8 +1,19 @@
 name: Test Flutter Android and iOS
-run-name: Flutter Android/iOS tests · ${{ inputs.flutter_repo }}@${{ inputs.flutter_ref }}
+run-name: Flutter ${{ inputs.test_suite }} tests · ${{ inputs.flutter_repo }}@${{ inputs.flutter_ref }}
 on:
   workflow_dispatch:
     inputs:
+      test_suite:
+        description: Test suites to run
+        default: all
+        required: true
+        type: choice
+        options:
+          - all
+          - android
+          - ios
+          - android-tools
+          - android-goldens
       flutter_repo:
         description: Flutter repository
         default: littleGnAl/flutter
@@ -54,6 +65,7 @@ jobs:
           PY
   android:
     needs: resolve
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'android'
     uses: ./.github/workflows/test_android.yaml
     with:
       flutter_repo: ${{ inputs.flutter_repo }}
@@ -62,6 +74,7 @@ jobs:
       ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   ios:
     needs: resolve
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'ios'
     uses: ./.github/workflows/test_ios.yaml
     with:
       flutter_repo: ${{ inputs.flutter_repo }}
@@ -70,6 +83,7 @@ jobs:
       ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   android-tools:
     needs: resolve
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'android' || inputs.test_suite == 'android-tools'
     uses: ./.github/workflows/test_android_tools.yaml
     with:
       flutter_repo: ${{ inputs.flutter_repo }}
@@ -78,6 +92,7 @@ jobs:
       ci_policy_artifact: official-ci-policy-${{ needs.resolve.outputs.sha }}
   android-goldens:
     needs: resolve
+    if: inputs.test_suite == 'all' || inputs.test_suite == 'android' || inputs.test_suite == 'android-goldens'
     uses: ./.github/workflows/test_android_goldens.yaml
     with:
       flutter_repo: ${{ inputs.flutter_repo }}
