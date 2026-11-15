@@ -199,6 +199,11 @@ class Golden:
             manifest.write_text(original)
 
     def execute(self):
+        from android import monitor_android
+        with monitor_android(self.outputs):
+            return self._execute()
+
+    def _execute(self):
         captured = self.outputs / "baseline-images"
         statuses = {}
         metadata = {"suite": self.suite, "target_sha": self.source, "baseline_sha": self.baseline,

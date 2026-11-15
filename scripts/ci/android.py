@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import difflib
 import json
 import os
@@ -14,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 
 
 BUILD_TASKS = (
@@ -132,6 +134,83 @@ def flutter_plugin_repositories(root, outputs, dry_run=False):
         yield
     finally:
         settings.write_bytes(original)
+
+
+def runner_resources():
+    snapshot = {"timestamp": datetime.now(timezone.utc).isoformat(), "memory_kb": {},
+                "processes": []}
+    proc = Path("/proc")
+    try:
+        for line in (proc / "meminfo").read_text().splitlines():
+            key, value = line.split(":", 1)
+            if key in {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}:
+                snapshot["memory_kb"][key] = int(value.split()[0])
+    except OSError:
+        pass
+    for status in proc.glob("[0-9]*/status"):
+        try:
+            fields = dict(line.split(":", 1) for line in status.read_text().splitlines())
+            snapshot["processes"].append({"pid": int(status.parent.name),
+                                          "name": fields["Name"].strip(),
+                                          "rss_kb": int(fields.get("VmRSS", "0 kB").split()[0])})
+        except (OSError, ValueError, KeyError):
+            continue
+    snapshot["processes"] = sorted(snapshot["processes"], key=lambda p: p["rss_kb"], reverse=True)[:12]
+    return snapshot
+
+
+@contextmanager
+def monitor_android(outputs, *, enabled=True, capture_logcat=True, interval=30):
+    """Retain pre-disconnect logcat and host memory without changing test results."""
+    if not enabled:
+        yield
+        return
+    outputs.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
+
+    def sample():
+        try:
+            line = json.dumps(runner_resources())
+            with (outputs / "runner-resources.jsonl").open("a") as log:
+                log.write(line + "\n")
+            print("[Android resources] " + line, flush=True)
+        except OSError as error:
+            print(f"Could not collect Android resource diagnostics: {error}", flush=True)
+
+    def sample_periodically():
+        while not stop.wait(interval):
+            sample()
+
+    sample()
+    worker = threading.Thread(target=sample_periodically, daemon=True)
+    worker.start()
+    process = None
+    logcat = None
+    try:
+        adb = shutil.which("adb") if capture_logcat else None
+        if adb:
+            logcat = (outputs / "logcat-live.log").open("a")
+            try:
+                process = subprocess.Popen([adb, "logcat", "-v", "threadtime"],
+                                           stdout=logcat, stderr=subprocess.STDOUT)
+            except OSError as error:
+                logcat.write(f"Could not start live logcat: {error}\n")
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=5)
+        if process is not None:
+            try:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"Could not stop live logcat: {error}", flush=True)
+        if logcat is not None:
+            logcat.close()
 
 
 def source_plan(root, policy=None):
@@ -357,8 +436,9 @@ class Android:
                        "--results-file", self.outputs / f"{name}.json"]
             if modes:
                 command.append("--use-emulator")
-            with flutter_plugin_repositories(self.root, self.outputs, self.dry_run):
-                self.run(command, lab)
+            with monitor_android(self.outputs, enabled=not self.dry_run, capture_logcat=bool(modes)):
+                with flutter_plugin_repositories(self.root, self.outputs, self.dry_run):
+                    self.run(command, lab)
         finally:
             if modes:
                 self.collect_adb()
