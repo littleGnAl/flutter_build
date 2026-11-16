@@ -1,4 +1,5 @@
 name: Request Android verification
+run-name: Android verification request 2
 on:
   push:
     branches: [littlegnal/fix-flutter-ci-bootstrap]
@@ -9,7 +10,7 @@ permissions:
 jobs:
   request:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 360
     env:
       OPERATION: dispatch
       TARGET_RUN_ID: '0'
@@ -36,6 +37,7 @@ jobs:
               }
               core.info(`Requested cancellation of Android run ${run_id}`);
             } else if (process.env.OPERATION === 'dispatch') {
+              const requestedAt = Date.now();
               await github.rest.actions.createWorkflowDispatch({
                 ...context.repo,
                 workflow_id: 'test_all.yaml',
@@ -43,6 +45,72 @@ jobs:
                 inputs: {test_suite: 'android', flutter_repo: 'littleGnAl/flutter', flutter_ref: 'master'}
               });
               core.info('Dispatched Android full verification against master');
+              const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+              let run;
+              for (let attempt = 0; attempt < 30; attempt++) {
+                try {
+                  const {data} = await github.rest.actions.listWorkflowRuns({
+                    ...context.repo, workflow_id: 'test_all.yaml', branch,
+                    event: 'workflow_dispatch', per_page: 10
+                  });
+                  run = data.workflow_runs.find(candidate =>
+                    candidate.head_sha === context.sha && candidate.head_branch === branch &&
+                    candidate.display_title.startsWith('Flutter android tests') &&
+                    Date.parse(candidate.created_at) >= requestedAt - 10000);
+                } catch (error) {
+                  core.warning(`Could not query the dispatched run: ${error.message}`);
+                }
+                if (run) break;
+                await sleep(2000);
+              }
+              if (!run) throw new Error('Could not identify the dispatched Android run');
+              core.info(`Monitoring ${run.html_url}`);
+              core.setOutput('run_id', run.id);
+              const testSteps = new Set([
+                'Java embedding tests', 'Build native tests',
+                'Run native tests on the upstream AVD configuration',
+                'Build matching Android and host engines',
+                'Run functional task with matching source engines',
+                'AAR / Gradle / add-to-app compatibility against baseline artifacts',
+                'Generate baseline and compare the target revision',
+                'Run all cases in the official Android tool partition',
+                'Run ./.github/actions/setup-official-avd'
+              ]);
+              let previousCounts;
+              while (true) {
+                try {
+                const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({
+                  ...context.repo, run_id: run.id, per_page: 100
+                });
+                const counts = {};
+                for (const job of jobs.jobs) {
+                  const key = job.conclusion || job.status;
+                  counts[key] = (counts[key] || 0) + 1;
+                }
+                const summary = JSON.stringify(counts);
+                if (summary !== previousCounts) {
+                  core.info(`Android ${run.id}: ${summary}`);
+                  previousCounts = summary;
+                }
+                const failedTest = jobs.jobs.find(job => job.runner_id &&
+                  job.steps?.some(step => testSteps.has(step.name) && step.conclusion === 'failure'));
+                const {data: state} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: run.id});
+                if (failedTest) {
+                  if (state.status !== 'completed') {
+                    await github.rest.actions.cancelWorkflowRun({...context.repo, run_id: run.id});
+                  }
+                  core.setFailed(`Android test failed: ${failedTest.name}; ${failedTest.html_url}`);
+                  return;
+                }
+                if (state.status === 'completed') {
+                  core.info(`Android run finished: ${state.conclusion}`);
+                  return;
+                }
+                } catch (error) {
+                  core.warning(`Android status query failed; retrying: ${error.message}`);
+                }
+                await sleep(30000);
+              }
             } else {
               throw new Error('Unsupported Android verification operation');
             }

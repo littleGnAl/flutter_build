@@ -26,18 +26,21 @@ class OfficialAvdTest(unittest.TestCase):
                 launcher = commands / "vpython3"
                 launcher.write_text(f"#!{sys.executable}\nprint('android_35_google_apis_x64|emulator-5554 started (pid: 12345)')\n")
                 launcher.chmod(0o755)
-                adb = commands / "adb"
+                sdk = root / "sdk"
+                adb = sdk / "platform-tools/adb"
+                adb.parent.mkdir(parents=True)
                 adb.write_text(f"#!{sys.executable}\nimport sys\nprint('stopping', *sys.argv[1:])\nsys.exit(42)\n")
                 adb.chmod(0o755)
                 outputs = root / "results"
                 self.emulator(root / "archive")
-                env = {**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+                env = {**os.environ, "PATH": str(commands), "ANDROID_HOME": str(sdk),
+                       "ANDROID_SDK_ROOT": str(sdk),
                        "FLUTTER_CI_AVD_ROOT": str(root / "archive"),
                        "FLUTTER_CI_AVD_CONFIG": "android_35_google_apis_x64.textpb",
                        "FLUTTER_TEST_OUTPUTS_DIR": str(outputs)}
                 result = subprocess.run([sys.executable, str(SCRIPT), "run", "--", sys.executable,
-                                         "-c", "import os,sys; print(os.environ['ANDROID_SERIAL']); sys.exit(int(sys.argv[1]))",
-                                         str(test_result)], env=env, capture_output=True, text=True)
+                                         "-c", "import os,shutil,sys; assert shutil.which('adb') == sys.argv[2]; print(os.environ['ANDROID_SERIAL']); sys.exit(int(sys.argv[1]))",
+                                         str(test_result), str(adb)], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, test_result, result.stdout + result.stderr)
                 self.assertIn("emulator-5554", result.stdout)
                 self.assertIn("stopping -s emulator-5554 emu kill", (outputs / "avd/stop.log").read_text())

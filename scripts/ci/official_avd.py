@@ -14,6 +14,17 @@ import subprocess
 import sys
 
 
+def adb_executable():
+    for name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if directory := os.environ.get(name):
+            candidate = Path(directory) / "platform-tools/adb"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    if adb := shutil.which("adb"):
+        return adb
+    raise ValueError("Android platform-tools adb is unavailable")
+
+
 def run(command, log, *, timeout=1800):
     command = list(map(str, command))
     print("$ " + shlex.join(command), flush=True)
@@ -26,6 +37,13 @@ def run(command, log, *, timeout=1800):
             raise
 
 
+def check_acceleration(root, outputs):
+    emulators = list((root / "src/.android_emulator").glob("**/emulator/emulator"))
+    if len(emulators) != 1:
+        raise ValueError("Expected one emulator binary installed by the official AVD launcher")
+    run([emulators[0], "-accel-check"], outputs / "acceleration.log", timeout=30)
+
+
 def install(config, version):
     from android import avd_configuration
     avd_configuration(config)
@@ -34,6 +52,9 @@ def install(config, version):
     root = Path(os.environ["RUNNER_TEMP"]) / "official-android-avd"
     outputs = Path(os.environ["FLUTTER_TEST_OUTPUTS_DIR"]) / "avd"
     outputs.mkdir(parents=True, exist_ok=True)
+    adb = adb_executable()
+    with Path(os.environ["GITHUB_PATH"]).open("a") as output:
+        output.write(str(Path(adb).parent) + "\n")
     ensure = outputs / "launcher.ensure"
     ensure.write_text(f"chromium/tools/android/avd/linux-amd64 {version}\n")
     run(["cipd", "ensure", "-root", root, "-ensure-file", ensure], outputs / "cipd.log")
@@ -43,6 +64,7 @@ def install(config, version):
     shutil.copy2(proto, outputs / config)
     run(["vpython3", root / "src/tools/android/avd/avd.py", "install", "--avd-config", proto],
         outputs / "install.log")
+    check_acceleration(root, outputs)
     (outputs / "revision.json").write_text(json.dumps({
         "avd_config": config, "avd_cipd_version": version,
         "policy": "Chromium launcher, emulator, system image and preconfigured AVD from the target CI pin",
@@ -58,13 +80,8 @@ def session(outputs):
     config = os.environ["FLUTTER_CI_AVD_CONFIG"]
     proto = root / "src/tools/android/avd/proto" / config
     outputs.mkdir(parents=True, exist_ok=True)
-    adb = shutil.which("adb")
-    if not adb:
-        raise ValueError("Android platform-tools adb is unavailable")
-    emulators = list((root / "src/.android_emulator").glob("**/emulator/emulator"))
-    if len(emulators) != 1:
-        raise ValueError("Expected one emulator binary installed by the official AVD launcher")
-    run([emulators[0], "-accel-check"], outputs / "acceleration.log", timeout=30)
+    adb = adb_executable()
+    check_acceleration(root, outputs)
     log = outputs / "emulator.log"
     # Debug output inherits this file, so the emulator keeps logging after the
     # official launcher exits. Do not capture a pipe held open by the emulator.
@@ -76,7 +93,9 @@ def session(outputs):
     serial, pid = match.groups()
     (outputs / "instance.json").write_text(json.dumps({"serial": serial, "pid": int(pid)}) + "\n")
     previous = os.environ.get("ANDROID_SERIAL")
+    previous_path = os.environ.get("PATH", "")
     os.environ["ANDROID_SERIAL"] = serial
+    os.environ["PATH"] = str(Path(adb).parent) + os.pathsep + previous_path
     try:
         print(f"Official Android AVD ready: {serial}", flush=True)
         yield serial
@@ -89,6 +108,7 @@ def session(outputs):
             os.environ.pop("ANDROID_SERIAL", None)
         else:
             os.environ["ANDROID_SERIAL"] = previous
+        os.environ["PATH"] = previous_path
 
 
 def main():
