@@ -74,7 +74,7 @@ def install(config, version):
 
 
 @contextmanager
-def session(outputs):
+def session(outputs, *, gpu_mode=None):
     """Start the official AVD and stop only that instance, preserving test failures."""
     root = Path(os.environ["FLUTTER_CI_AVD_ROOT"])
     config = os.environ["FLUTTER_CI_AVD_CONFIG"]
@@ -85,13 +85,18 @@ def session(outputs):
     log = outputs / "emulator.log"
     # Debug output inherits this file, so the emulator keeps logging after the
     # official launcher exits. Do not capture a pipe held open by the emulator.
-    run(["vpython3", root / "src/tools/android/avd/avd.py", "start", "--avd-config", proto,
-         "--adb-path", adb, "--enable-network", "--debug-tags", "init,gles"], log, timeout=600)
+    command = ["vpython3", root / "src/tools/android/avd/avd.py", "start", "--avd-config", proto,
+               "--adb-path", adb, "--enable-network", "--debug-tags", "init,gles"]
+    if gpu_mode:
+        command.extend(["--gpu-mode", gpu_mode])
+    run(command, log, timeout=600)
     match = re.search(r"\|(emulator-\d+) started \(pid: (\d+)\)", log.read_text(errors="replace"))
     if not match:
         raise ValueError(f"Official AVD launcher did not report its instance; see {log}")
     serial, pid = match.groups()
-    (outputs / "instance.json").write_text(json.dumps({"serial": serial, "pid": int(pid)}) + "\n")
+    (outputs / "instance.json").write_text(json.dumps({
+        "serial": serial, "pid": int(pid), "gpu_mode_override": gpu_mode,
+    }) + "\n")
     previous = os.environ.get("ANDROID_SERIAL")
     previous_path = os.environ.get("PATH", "")
     os.environ["ANDROID_SERIAL"] = serial
@@ -118,6 +123,7 @@ def main():
     prepare.add_argument("--config", required=True)
     prepare.add_argument("--version", required=True)
     execute = commands.add_parser("run")
+    execute.add_argument("--gpu-mode", choices=("swangle_indirect", "swiftshader_indirect"))
     execute.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.operation == "install":
@@ -126,7 +132,7 @@ def main():
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         raise ValueError("An Android test command is required")
-    with session(Path(os.environ["FLUTTER_TEST_OUTPUTS_DIR"]) / "avd"):
+    with session(Path(os.environ["FLUTTER_TEST_OUTPUTS_DIR"]) / "avd", gpu_mode=args.gpu_mode):
         return subprocess.run(command, check=False).returncode
 
 

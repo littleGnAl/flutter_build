@@ -24,7 +24,7 @@ class OfficialAvdTest(unittest.TestCase):
                 commands = root / "bin"
                 commands.mkdir()
                 launcher = commands / "vpython3"
-                launcher.write_text(f"#!{sys.executable}\nprint('android_35_google_apis_x64|emulator-5554 started (pid: 12345)')\n")
+                launcher.write_text(f"#!{sys.executable}\nimport sys\nprint(sys.argv)\nprint('android_35_google_apis_x64|emulator-5554 started (pid: 12345)')\n")
                 launcher.chmod(0o755)
                 sdk = root / "sdk"
                 adb = sdk / "platform-tools/adb"
@@ -38,13 +38,17 @@ class OfficialAvdTest(unittest.TestCase):
                        "FLUTTER_CI_AVD_ROOT": str(root / "archive"),
                        "FLUTTER_CI_AVD_CONFIG": "android_35_google_apis_x64.textpb",
                        "FLUTTER_TEST_OUTPUTS_DIR": str(outputs)}
-                result = subprocess.run([sys.executable, str(SCRIPT), "run", "--", sys.executable,
+                gpu = ["--gpu-mode", "swiftshader_indirect"] if test_result else []
+                result = subprocess.run([sys.executable, str(SCRIPT), "run", *gpu, "--", sys.executable,
                                          "-c", "import os,shutil,sys; assert shutil.which('adb') == sys.argv[2]; print(os.environ['ANDROID_SERIAL']); sys.exit(int(sys.argv[1]))",
                                          str(test_result), str(adb)], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, test_result, result.stdout + result.stderr)
                 self.assertIn("emulator-5554", result.stdout)
                 self.assertIn("stopping -s emulator-5554 emu kill", (outputs / "avd/stop.log").read_text())
-                self.assertEqual(json.loads((outputs / "avd/instance.json").read_text())["pid"], 12345)
+                instance = json.loads((outputs / "avd/instance.json").read_text())
+                self.assertEqual(instance["pid"], 12345)
+                self.assertEqual(instance["gpu_mode_override"], "swiftshader_indirect" if test_result else None)
+                self.assertEqual("--gpu-mode" in (outputs / "avd/emulator.log").read_text(), bool(test_result))
 
     def test_failed_avd_start_never_runs_the_test_command(self):
         with tempfile.TemporaryDirectory() as directory:
