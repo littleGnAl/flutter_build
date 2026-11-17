@@ -235,7 +235,13 @@ jobs:
         env:
           TASK_NAME: ${{ matrix.task }}
           ENGINE_MODES: ${{ matrix.modes }}
-        run: python3 scripts/ci/official_avd.py run -- python3 scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
+          GPU_MODE: ${{ matrix.task == 'external_textures_integration_test' && 'swiftshader' || '' }}
+        run: |
+          gpu_arguments=()
+          if [ -n "$GPU_MODE" ]; then
+            gpu_arguments=(--gpu-mode "$GPU_MODE")
+          fi
+          python3 scripts/ci/official_avd.py run "${gpu_arguments[@]}" -- python3 scripts/ci/android.py task --name "$TASK_NAME" --modes "$ENGINE_MODES"
       - name: Restore the Flutter wrapper
         if: always()
         run: python3 scripts/ci/android.py restore-flutter-wrapper

@@ -1,5 +1,5 @@
 name: Request Android verification
-run-name: Android texture GPU comparison
+run-name: Android verification request 3
 on:
   push:
     branches: [littlegnal/fix-flutter-ci-bootstrap]
@@ -12,10 +12,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      OPERATION: probe
+      OPERATION: dispatch
       TARGET_RUN_ID: '0'
-    outputs:
-      operation: ${{ steps.control.outputs.operation }}
     steps:
       - id: control
         uses: actions/github-script@v8
@@ -25,7 +23,6 @@ jobs:
             if (context.ref !== `refs/heads/${branch}`) {
               throw new Error('Android verification control is restricted to the repair branch');
             }
-            core.setOutput('operation', process.env.OPERATION);
             if (process.env.OPERATION === 'cancel') {
               const run_id = Number(process.env.TARGET_RUN_ID);
               if (!Number.isSafeInteger(run_id) || run_id <= 0) {
@@ -115,78 +112,6 @@ jobs:
                 }
                 await sleep(30000);
               }
-            } else if (process.env.OPERATION === 'probe') {
-              core.info('Running the failed texture case with identical source artifacts and two software GPU backends');
             } else {
               throw new Error('Unsupported Android verification operation');
             }
-  texture-probe:
-    needs: request
-    if: needs.request.outputs.operation == 'probe'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      actions: read
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        gpu: [official, swiftshader_indirect]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/free-linux-disk-space
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: 43909132737
-          name: official-ci-policy-android-bc9b0371d817ece42e733e0d8bd6004337f8247e
-          path: test-results
-      - uses: ./.github/actions/setup-flutter-tests
-        with:
-          flutter_repo: littleGnAl/flutter
-          flutter_sha: bc9b0371d817ece42e733e0d8bd6004337f8247e
-          engine: 'false'
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - run: flutter config --jdk-dir "$JAVA_HOME"
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          run-id: 43909132737
-          name: android-app-engine-debug
-          path: engine-artifacts
-      - name: Restore the exact source-built Engine from the failed run
-        run: |
-          tar -C flutter/engine/src -xzf engine-artifacts/engine-app-debug.tar.gz
-          python3 scripts/ci/android.py validate-app --modes debug
-      - name: Enable KVM and install the same NDK
-        run: |
-          set -euxo pipefail
-          test -c /dev/kvm
-          sudo chmod 666 /dev/kvm
-          test -r /dev/kvm
-          test -w /dev/kvm
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'
-      - uses: ./.github/actions/setup-official-avd
-        with:
-          config: android_36_google_apis_x64.textpb
-          version: build_id:8719362231152674241
-      - name: Run the unchanged official texture frame rate task
-        env:
-          GPU_MODE: ${{ matrix.gpu }}
-        run: |
-          gpu_arguments=()
-          if [ "$GPU_MODE" != official ]; then
-            gpu_arguments=(--gpu-mode "$GPU_MODE")
-          fi
-          python3 scripts/ci/official_avd.py run "${gpu_arguments[@]}" -- python3 scripts/ci/android.py task --name external_textures_integration_test --modes debug
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: android-texture-probe-${{ matrix.gpu }}
-          path: test-results
-          retention-days: 14

@@ -6,16 +6,28 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
+import official_avd
+
 
 SCRIPT = Path(__file__).parents[1] / "official_avd.py"
 
 
 class OfficialAvdTest(unittest.TestCase):
-    def emulator(self, root, exit_code=0):
+    def emulator(self, root, exit_code=0, version="35.4.9"):
         binary = root / "src/.android_emulator/fixture/emulator/emulator"
         binary.parent.mkdir(parents=True)
-        binary.write_text(f"#!{sys.executable}\nimport sys\nprint('KVM check', *sys.argv[1:])\nsys.exit({exit_code})\n")
+        binary.write_text(f"#!{sys.executable}\nimport sys\nprint('Android emulator version {version}' if '-version' in sys.argv else 'KVM check ' + ' '.join(sys.argv[1:]))\nsys.exit({exit_code})\n")
         binary.chmod(0o755)
+
+    def test_swiftshader_flag_matches_the_pinned_emulator_version(self):
+        for version, expected in (("35.4.9", "swiftshader_indirect"),
+                                  ("36.4.8", "swiftshader_indirect"),
+                                  ("36.4.9", "swiftshader"), ("37.2.13", "swiftshader")):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.emulator(root, version=version)
+                self.assertEqual(official_avd.swiftshader_mode(root, root), expected)
 
     def test_test_result_and_logs_survive_failed_emulator_cleanup(self):
         for test_result in (0, 7):
@@ -38,7 +50,7 @@ class OfficialAvdTest(unittest.TestCase):
                        "FLUTTER_CI_AVD_ROOT": str(root / "archive"),
                        "FLUTTER_CI_AVD_CONFIG": "android_35_google_apis_x64.textpb",
                        "FLUTTER_TEST_OUTPUTS_DIR": str(outputs)}
-                gpu = ["--gpu-mode", "swiftshader_indirect"] if test_result else []
+                gpu = ["--gpu-mode", "swiftshader"] if test_result else []
                 result = subprocess.run([sys.executable, str(SCRIPT), "run", *gpu, "--", sys.executable,
                                          "-c", "import os,shutil,sys; assert shutil.which('adb') == sys.argv[2]; print(os.environ['ANDROID_SERIAL']); sys.exit(int(sys.argv[1]))",
                                          str(test_result), str(adb)], env=env, capture_output=True, text=True)
@@ -47,6 +59,7 @@ class OfficialAvdTest(unittest.TestCase):
                 self.assertIn("stopping -s emulator-5554 emu kill", (outputs / "avd/stop.log").read_text())
                 instance = json.loads((outputs / "avd/instance.json").read_text())
                 self.assertEqual(instance["pid"], 12345)
+                self.assertEqual(instance["requested_gpu_mode"], "swiftshader" if test_result else None)
                 self.assertEqual(instance["gpu_mode_override"], "swiftshader_indirect" if test_result else None)
                 self.assertEqual("--gpu-mode" in (outputs / "avd/emulator.log").read_text(), bool(test_result))
 

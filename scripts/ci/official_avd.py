@@ -37,11 +37,27 @@ def run(command, log, *, timeout=1800):
             raise
 
 
-def check_acceleration(root, outputs):
+def emulator_binary(root):
     emulators = list((root / "src/.android_emulator").glob("**/emulator/emulator"))
     if len(emulators) != 1:
         raise ValueError("Expected one emulator binary installed by the official AVD launcher")
-    run([emulators[0], "-accel-check"], outputs / "acceleration.log", timeout=30)
+    return emulators[0]
+
+
+def check_acceleration(root, outputs):
+    run([emulator_binary(root), "-accel-check"], outputs / "acceleration.log", timeout=30)
+
+
+def swiftshader_mode(root, outputs):
+    log = outputs / "emulator-version.log"
+    run([emulator_binary(root), "-version"], log, timeout=30)
+    match = re.search(r"Android emulator version (\d+)\.(\d+)\.(\d+)", log.read_text())
+    if not match:
+        raise ValueError(f"Could not identify the pinned emulator version; see {log}")
+    version = tuple(map(int, match.groups()))
+    # Android deprecated the indirect mode names in emulator 36.4.9.
+    # https://developer.android.com/studio/run/emulator-acceleration
+    return "swiftshader_indirect" if version < (36, 4, 9) else "swiftshader"
 
 
 def install(config, version):
@@ -87,6 +103,9 @@ def session(outputs, *, gpu_mode=None):
     # official launcher exits. Do not capture a pipe held open by the emulator.
     command = ["vpython3", root / "src/tools/android/avd/avd.py", "start", "--avd-config", proto,
                "--adb-path", adb, "--enable-network", "--debug-tags", "init,gles"]
+    requested_gpu_mode = gpu_mode
+    if gpu_mode == "swiftshader":
+        gpu_mode = swiftshader_mode(root, outputs)
     if gpu_mode:
         command.extend(["--gpu-mode", gpu_mode])
     run(command, log, timeout=600)
@@ -95,7 +114,8 @@ def session(outputs, *, gpu_mode=None):
         raise ValueError(f"Official AVD launcher did not report its instance; see {log}")
     serial, pid = match.groups()
     (outputs / "instance.json").write_text(json.dumps({
-        "serial": serial, "pid": int(pid), "gpu_mode_override": gpu_mode,
+        "serial": serial, "pid": int(pid), "requested_gpu_mode": requested_gpu_mode,
+        "gpu_mode_override": gpu_mode,
     }) + "\n")
     previous = os.environ.get("ANDROID_SERIAL")
     previous_path = os.environ.get("PATH", "")
@@ -123,7 +143,7 @@ def main():
     prepare.add_argument("--config", required=True)
     prepare.add_argument("--version", required=True)
     execute = commands.add_parser("run")
-    execute.add_argument("--gpu-mode", choices=("swangle_indirect", "swiftshader_indirect"))
+    execute.add_argument("--gpu-mode", choices=("swiftshader", "swangle_indirect", "swiftshader_indirect"))
     execute.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.operation == "install":
