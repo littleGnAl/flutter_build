@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 ANDROID_TOOL_SHARDS = {
@@ -176,6 +177,36 @@ class Runner:
                     shutil.copy2(path, destination)
 
 
+def prepare_preview_sdk(runner: Runner, version: str, flutter: str, env: dict) -> None:
+    from android import android_ndk
+
+    temp = Path(os.environ["RUNNER_TEMP"])
+    package = temp / "android-preview-sdk"
+    ensure = runner.outputs / "android-sdk.ensure"
+    ensure.write_text(f"flutter/android/sdk/all/linux-amd64 {version}\n")
+    runner.run(["cipd", "ensure", "-root", str(package), "-ensure-file", str(ensure)])
+    # The LUCI android_sdk recipe uses a flat SDK only for the legacy 29.0 pin.
+    sdk = package if version == "version:29.0" else package / "sdk"
+    if not any(sdk.glob("platforms/android-*/android.jar")):
+        raise ValueError(f"No Android platform found in pinned SDK {version} under {sdk}")
+
+    sdkmanager = Path(env["ANDROID_HOME"]) / "cmdline-tools/latest/bin/sdkmanager"
+    env.update(ANDROID_HOME=str(sdk), ANDROID_SDK_ROOT=str(sdk))
+    env["GRADLE_OPTS"] = (env.get("GRADLE_OPTS", "") + " -Dorg.gradle.daemon=false").strip()
+    runner.run([flutter, "config", f"--android-sdk={sdk}"], env=env)
+    ndk, _ = android_ndk(runner.root)
+    runner.run([str(sdkmanager), f"--sdk_root={sdk}", f"ndk;{ndk}"], env=env)
+
+    # LUCI starts the timed tests with a populated Gradle cache. Resolve the
+    # selected Flutter template's dependencies before Dart starts its case timer.
+    with tempfile.TemporaryDirectory(dir=temp) as directory:
+        plugin = Path(directory) / "preview_cache"
+        runner.run([flutter, "create", "--template=plugin", "--platforms=android", str(plugin)], env=env)
+        android = plugin / "example/android"
+        runner.run(["./gradlew", "--console=plain", "--info", ":app:checkDebugAarMetadata"],
+                   cwd=android, env=env)
+
+
 def run_sdk(runner: Runner, shard: str, subshard: str, android_sdk: str = "") -> None:
     if shard not in ANDROID_TOOL_SHARDS:
         raise ValueError(f"Unsupported Android tool shard: {shard}")
@@ -206,12 +237,7 @@ def run_sdk(runner: Runner, shard: str, subshard: str, android_sdk: str = "") ->
     runner.run([flutter, "update-packages"])
     env = os.environ.copy()
     if shard == "android_preview_tool_integration_tests":
-        sdk = runner.outputs / "android-preview-sdk"
-        ensure = runner.outputs / "android-sdk.ensure"
-        ensure.write_text(f"flutter/android/sdk/all/linux-amd64 {android_sdk}\n")
-        runner.run(["cipd", "ensure", "-root", str(sdk), "-ensure-file", str(ensure)])
-        runner.run([flutter, "config", f"--android-sdk={sdk}"])
-        env.update(ANDROID_HOME=str(sdk), ANDROID_SDK_ROOT=str(sdk))
+        prepare_preview_sdk(runner, android_sdk, flutter, env)
     env.update(SHARD=shard, FLUTTER_ROOT=str(runner.root))
     env.pop("SUBSHARD", None)
     if subshard:

@@ -181,6 +181,15 @@ class SdkEnvironmentTests(unittest.TestCase):
         self.root = Path(self.directory.name) / "flutter"
         self.outputs = Path(self.directory.name) / "outputs"
         self.outputs.mkdir()
+        self.temp = Path(self.directory.name) / "runner-temp"
+        self.temp.mkdir()
+        self.preview_sdk = self.temp / "android-preview-sdk/sdk"
+        platform = self.preview_sdk / "platforms/android-Preview"
+        platform.mkdir(parents=True)
+        (platform / "android.jar").touch()
+        extension = self.root / "packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt"
+        extension.parent.mkdir(parents=True)
+        extension.write_text('val ndkVersion: String = "28.2.13676358"')
         for variant in ("java11", "java17", "preview"):
             write_runner(self.root, variant)
         self.runner = mock.Mock(root=self.root, outputs=self.outputs)
@@ -188,6 +197,7 @@ class SdkEnvironmentTests(unittest.TestCase):
             "FLUTTER_PREBUILT_ENGINE_VERSION": "published-engine",
             "JAVA_HOME": "/jdk", "SUBSHARD": "inherited-partition",
             "ANDROID_HOME": "/runner-sdk", "ANDROID_SDK_ROOT": "/runner-sdk",
+            "RUNNER_TEMP": str(self.temp),
         }, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -215,10 +225,25 @@ class SdkEnvironmentTests(unittest.TestCase):
                 env = self.preview(sdk_version=version, planned=version)
                 self.assertEqual((self.outputs / "android-sdk.ensure").read_text(),
                                  f"flutter/android/sdk/all/linux-amd64 {version}\n")
-                self.assertEqual(env["ANDROID_HOME"], str(self.outputs / "android-preview-sdk"))
+                self.assertEqual(env["ANDROID_HOME"], str(self.preview_sdk))
                 self.assertEqual(env["ANDROID_SDK_ROOT"], env["ANDROID_HOME"])
                 self.assertEqual(os.environ["ANDROID_SDK_ROOT"], "/runner-sdk")
                 self.assertEqual(self.runner.manifest.call_args.kwargs["android_sdk"], version)
+
+    def test_preview_prepares_dependencies_before_the_original_timed_shard(self):
+        self.preview()
+        commands = [call.args[0] for call in self.runner.run.call_args_list]
+        self.assertIn(["/runner-sdk/cmdline-tools/latest/bin/sdkmanager",
+                       f"--sdk_root={self.preview_sdk}", "ndk;28.2.13676358"], commands)
+        self.assertEqual(commands[-2][-1], ":app:checkDebugAarMetadata")
+        self.assertEqual(commands[-1][-1], "dev/bots/test.dart")
+        self.assertEqual(self.runner.run.call_args.kwargs["env"]["GRADLE_OPTS"], "-Dorg.gradle.daemon=false")
+
+    def test_incomplete_pinned_sdk_cannot_fall_back_to_host_sdk(self):
+        (self.preview_sdk / "platforms/android-Preview/android.jar").unlink()
+        with self.assertRaisesRegex(ValueError, "No Android platform"):
+            self.preview()
+        self.assertEqual(self.runner.run.call_args.args[0][0], "cipd")
 
     def test_preview_rejects_a_version_that_differs_from_the_target(self):
         with self.assertRaisesRegex(ValueError, "differs from target CI"):
