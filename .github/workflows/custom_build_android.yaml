@@ -387,13 +387,28 @@ jobs:
         path: ${{ env.ZIP_NAME }}
         compression-level: 0
 
+    - name: Package Release assets
+      if: ${{ inputs.upload_release }}
+      run: |
+        mkdir -p release-assets
+        cd artifacts
+        for variant in *; do
+          asset="../release-assets/${TAG_NAME}-${variant}.zip"
+          zip -qr "$asset" "$variant"
+          if (( $(stat -c %s "$asset") >= 2147483648 )); then
+            echo "::error::Release asset ${asset##*/} must be smaller than 2 GiB"
+            exit 1
+          fi
+        done
+
     - name: Create Release
       if: ${{ inputs.upload_release }}
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.TAG_NAME }}
         name: Flutter Artifacts Android ${{ env.TAG_NAME }}
-        files: ${{ env.ZIP_NAME }}
+        files: release-assets/*.zip
+        fail_on_unmatched_files: true
         draft: false
         prerelease: false
       env:
